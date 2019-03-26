@@ -191,8 +191,8 @@ def run(args, kwargs):
 
     # logger
     utils.makedirs(args.snap_dir)
-    logger = utils.get_logger(logpath=os.path.join(args.snap_dir, 'logs'), filepath=os.path.abspath(__file__))
 
+    logger = utils.get_logger(logpath=os.path.join(args.snap_dir, 'logs'), filepath=os.path.abspath(__file__))
     logger.info(args)
 
     # SAVING
