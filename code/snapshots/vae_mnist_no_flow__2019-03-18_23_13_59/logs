@@ -1,0 +1,489 @@
+C:\Users\Sasho\PycharmProjects\multimodaldiffeq\code\train_vae_flow.py
+# !/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+from __future__ import print_function
+import argparse
+import time
+import torch
+import torch.utils.data
+import torch.optim as optim
+import numpy as np
+import math
+import random
+
+import os
+
+import datetime
+
+import lib.utils as utils
+import lib.layers.odefunc as odefunc
+
+import vae_lib.models.VAE as VAE
+import vae_lib.models.CNFVAE as CNFVAE
+from vae_lib.optimization.training import train, evaluate
+from vae_lib.utils.load_data import load_dataset
+from vae_lib.utils.plotting import plot_training_curve
+
+SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
+parser = argparse.ArgumentParser(description='PyTorch Sylvester Normalizing flows')
+
+parser.add_argument(
+    '-d', '--dataset', type=str, default='mnist', choices=['mnist', 'freyfaces', 'omniglot', 'caltech'],
+    metavar='DATASET', help='Dataset choice.'
+)
+
+parser.add_argument(
+    '-freys', '--freyseed', type=int, default=123, metavar='FREYSEED',
+    help="""Seed for shuffling frey face dataset for test split. Ignored for other datasets.
+                    Results in paper are produced with seeds 123, 321, 231"""
+)
+
+parser.add_argument('-nc', '--no_cuda', action='store_true', default=False, help='disables CUDA training')
+
+parser.add_argument('--manual_seed', type=int, help='manual seed, if not given resorts to random seed.')
+
+parser.add_argument(
+    '-li', '--log_interval', type=int, default=10, metavar='LOG_INTERVAL',
+    help='how many batches to wait before logging training status'
+)
+
+parser.add_argument(
+    '-od', '--out_dir', type=str, default='snapshots', metavar='OUT_DIR',
+    help='output directory for model snapshots etc.'
+)
+
+# optimization settings
+parser.add_argument(
+    '-e', '--epochs', type=int, default=2000, metavar='EPOCHS', help='number of epochs to train (default: 2000)'
+)
+parser.add_argument(
+    '-es', '--early_stopping_epochs', type=int, default=35, metavar='EARLY_STOPPING',
+    help='number of early stopping epochs'
+)
+
+parser.add_argument(
+    '-bs', '--batch_size', type=int, default=100, metavar='BATCH_SIZE', help='input batch size for training'
+)
+parser.add_argument('-lr', '--learning_rate', type=float, default=0.0005, metavar='LEARNING_RATE', help='learning rate')
+
+parser.add_argument(
+    '-w', '--warmup', type=int, default=100, metavar='N',
+    help='number of epochs for warm-up. Set to 0 to turn warmup off.'
+)
+parser.add_argument('--max_beta', type=float, default=1., metavar='MB', help='max beta for warm-up')
+parser.add_argument('--min_beta', type=float, default=0.0, metavar='MB', help='min beta for warm-up')
+parser.add_argument(
+    '-f', '--flow', type=str, default='no_flow', choices=[
+        'planar', 'iaf', 'householder', 'orthogonal', 'triangular', 'cnf', 'cnf_bias', 'cnf_hyper', 'cnf_rank',
+        'cnf_lyper', 'no_flow'
+    ], help="""Type of flows to use, no flows can also be selected"""
+)
+parser.add_argument('-r', '--rank', type=int, default=1)
+parser.add_argument(
+    '-nf', '--num_flows', type=int, default=4, metavar='NUM_FLOWS',
+    help='Number of flow layers, ignored in absence of flows'
+)
+parser.add_argument(
+    '-nv', '--num_ortho_vecs', type=int, default=8, metavar='NUM_ORTHO_VECS',
+    help=""" For orthogonal flow: How orthogonal vectors per flow do you need.
+                    Ignored for other flow types."""
+)
+parser.add_argument(
+    '-nh', '--num_householder', type=int, default=8, metavar='NUM_HOUSEHOLDERS',
+    help=""" For Householder Sylvester flow: Number of Householder matrices per flow.
+                    Ignored for other flow types."""
+)
+parser.add_argument(
+    '-mhs', '--made_h_size', type=int, default=320, metavar='MADEHSIZE',
+    help='Width of mades for iaf. Ignored for all other flows.'
+)
+parser.add_argument('--z_size', type=int, default=64, metavar='ZSIZE', help='how many stochastic hidden units')
+# gpu/cpu
+parser.add_argument('--gpu_num', type=int, default=0, metavar='GPU', help='choose GPU to run on.')
+
+# CNF settings
+parser.add_argument(
+    "--layer_type", type=str, default="concat",
+    choices=["ignore", "concat", "concat_v2", "squash", "concatsquash", "concatcoord", "hyper", "blend"]
+)
+parser.add_argument('--dims', type=str, default='512-512')
+parser.add_argument("--num_blocks", type=int, default=1, help='Number of stacked CNFs.')
+parser.add_argument('--time_length', type=float, default=0.5)
+parser.add_argument('--train_T', type=eval, default=False)
+parser.add_argument("--divergence_fn", type=str, default="approximate", choices=["brute_force", "approximate"])
+parser.add_argument("--nonlinearity", type=str, default="softplus", choices=odefunc.NONLINEARITIES)
+
+parser.add_argument('--solver', type=str, default='dopri5', choices=SOLVERS)
+parser.add_argument('--atol', type=float, default=1e-5)
+parser.add_argument('--rtol', type=float, default=1e-5)
+parser.add_argument("--step_size", type=float, default=None, help="Optional fixed step size.")
+
+parser.add_argument('--test_solver', type=str, default=None, choices=SOLVERS + [None])
+parser.add_argument('--test_atol', type=float, default=None)
+parser.add_argument('--test_rtol', type=float, default=None)
+
+parser.add_argument('--residual', type=eval, default=False, choices=[True, False])
+parser.add_argument('--rademacher', type=eval, default=False, choices=[True, False])
+parser.add_argument('--batch_norm', type=eval, default=False, choices=[True, False])
+parser.add_argument('--bn_lag', type=float, default=0)
+# evaluation
+parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False])
+parser.add_argument('--model_path', type=str, default='')
+parser.add_argument('--retrain_encoder', type=eval, default=False, choices=[True, False])
+
+args = parser.parse_args()
+args.cuda = not args.no_cuda and torch.cuda.is_available()
+
+if args.manual_seed is None:
+    args.manual_seed = random.randint(1, 100000)
+random.seed(args.manual_seed)
+torch.manual_seed(args.manual_seed)
+np.random.seed(args.manual_seed)
+
+if args.cuda:
+    # gpu device number
+    torch.cuda.set_device(args.gpu_num)
+
+kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
+
+
+def run(args, kwargs):
+    # ==================================================================================================================
+    # SNAPSHOTS
+    # ==================================================================================================================
+    args.model_signature = str(datetime.datetime.now())[0:19].replace(' ', '_')
+    args.model_signature = args.model_signature.replace(':', '_')
+
+    snapshots_path = os.path.join(args.out_dir, 'vae_' + args.dataset + '_')
+    snap_dir = snapshots_path + args.flow
+
+    if args.flow != 'no_flow':
+        snap_dir += '_' + 'num_flows_' + str(args.num_flows)
+
+    if args.flow == 'orthogonal':
+        snap_dir = snap_dir + '_num_vectors_' + str(args.num_ortho_vecs)
+    elif args.flow == 'orthogonalH':
+        snap_dir = snap_dir + '_num_householder_' + str(args.num_householder)
+    elif args.flow == 'iaf':
+        snap_dir = snap_dir + '_madehsize_' + str(args.made_h_size)
+
+    elif args.flow == 'permutation':
+        snap_dir = snap_dir + '_' + 'kernelsize_' + str(args.kernel_size)
+    elif args.flow == 'mixed':
+        snap_dir = snap_dir + '_' + 'num_householder_' + str(args.num_householder)
+    elif args.flow == 'cnf_rank':
+        snap_dir = snap_dir + '_rank_' + str(args.rank) + '_' + args.dims + '_num_blocks_' + str(args.num_blocks)
+    elif 'cnf' in args.flow:
+        snap_dir = snap_dir + '_' + args.dims + '_num_blocks_' + str(args.num_blocks)
+
+    if args.retrain_encoder:
+        snap_dir = snap_dir + '_retrain-encoder_'
+    elif args.evaluate:
+        snap_dir = snap_dir + '_evaluate_'
+
+    snap_dir = snap_dir + '__' + args.model_signature + '/'
+
+    args.snap_dir = snap_dir
+
+    if not os.path.exists(snap_dir):
+        os.makedirs(snap_dir)
+
+    # logger
+    utils.makedirs(args.snap_dir)
+    logger = utils.get_logger(logpath=os.path.join(args.snap_dir, 'logs'), filepath=os.path.abspath(__file__))
+
+    logger.info(args)
+
+    # SAVING
+    torch.save(args, snap_dir + args.flow + '.config')
+
+    # ==================================================================================================================
+    # LOAD DATA
+    # ==================================================================================================================
+    train_loader, val_loader, test_loader, args = load_dataset(args, **kwargs)
+
+    if not args.evaluate:
+
+        # ==============================================================================================================
+        # SELECT MODEL
+        # ==============================================================================================================
+        # flow parameters and architecture choice are passed on to model through args
+
+        if args.flow == 'no_flow':
+            model = VAE.VAE(args)
+        elif args.flow == 'planar':
+            model = VAE.PlanarVAE(args)
+        elif args.flow == 'iaf':
+            model = VAE.IAFVAE(args)
+        elif args.flow == 'orthogonal':
+            model = VAE.OrthogonalSylvesterVAE(args)
+        elif args.flow == 'householder':
+            model = VAE.HouseholderSylvesterVAE(args)
+        elif args.flow == 'triangular':
+            model = VAE.TriangularSylvesterVAE(args)
+        elif args.flow == 'cnf':
+            model = CNFVAE.CNFVAE(args)
+        elif args.flow == 'cnf_bias':
+            model = CNFVAE.AmortizedBiasCNFVAE(args)
+        elif args.flow == 'cnf_hyper':
+            model = CNFVAE.HypernetCNFVAE(args)
+        elif args.flow == 'cnf_lyper':
+            model = CNFVAE.LypernetCNFVAE(args)
+        elif args.flow == 'cnf_rank':
+            model = CNFVAE.AmortizedLowRankCNFVAE(args)
+        else:
+            raise ValueError('Invalid flow choice')
+
+        if args.retrain_encoder:
+            logger.info(f"Initializing decoder from {args.model_path}")
+            dec_model = torch.load(args.model_path)
+            dec_sd = {}
+            for k, v in dec_model.state_dict().items():
+                if 'p_x' in k:
+                    dec_sd[k] = v
+            model.load_state_dict(dec_sd, strict=False)
+
+        if args.cuda:
+            logger.info("Model on GPU")
+            model.cuda()
+
+        logger.info(model)
+
+        if args.retrain_encoder:
+            parameters = []
+            logger.info('Optimizing over:')
+            for name, param in model.named_parameters():
+                if 'p_x' not in name:
+                    logger.info(name)
+                    parameters.append(param)
+        else:
+            parameters = model.parameters()
+
+        optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
+
+        # ==================================================================================================================
+        # TRAINING
+        # ==================================================================================================================
+        train_loss = []
+        val_loss = []
+
+        # for early stopping
+        best_loss = np.inf
+        best_bpd = np.inf
+        e = 0
+        epoch = 0
+
+        train_times = []
+
+        for epoch in range(1, args.epochs + 1):
+
+            t_start = time.time()
+            tr_loss = train(epoch, train_loader, model, optimizer, args, logger)
+
+            train_loss.append(tr_loss)
+            train_times.append(time.time() - t_start)
+            logger.info('One training epoch took %.2f seconds' % (time.time() - t_start))
+
+            v_loss, v_bpd = evaluate(val_loader, model, args, logger, epoch=epoch)
+
+            val_loss.append(v_loss)
+
+            # early-stopping
+            if v_loss < best_loss:
+                e = 0
+                best_loss = v_loss
+                if args.input_type != 'binary':
+                    best_bpd = v_bpd
+                logger.info('->model saved<-')
+                torch.save(model, snap_dir + args.flow + '.model')
+                # torch.save(model, snap_dir + args.flow + '_' + args.architecture + '.model')
+
+            elif (args.early_stopping_epochs > 0) and (epoch >= args.warmup):
+                e += 1
+                if e > args.early_stopping_epochs:
+                    break
+
+            if args.input_type == 'binary':
+                logger.info(
+                    '--> Early stopping: {}/{} (BEST: loss {:.4f})\n'.format(e, args.early_stopping_epochs, best_loss)
+                )
+
+            else:
+                logger.info(
+                    '--> Early stopping: {}/{} (BEST: loss {:.4f}, bpd {:.4f})\n'.
+                    format(e, args.early_stopping_epochs, best_loss, best_bpd)
+                )
+
+            if math.isnan(v_loss):
+                raise ValueError('NaN encountered!')
+
+        train_loss = np.hstack(train_loss)
+        val_loss = np.array(val_loss)
+
+        plot_training_curve(train_loss, val_loss, fname=snap_dir + '/training_curve_%s.pdf' % args.flow)
+
+        # training time per epoch
+        train_times = np.array(train_times)
+        mean_train_time = np.mean(train_times)
+        std_train_time = np.std(train_times, ddof=1)
+        logger.info('Average train time per epoch: %.2f +/- %.2f' % (mean_train_time, std_train_time))
+
+        # ==================================================================================================================
+        # EVALUATION
+        # ==================================================================================================================
+
+        logger.info(args)
+        logger.info('Stopped after %d epochs' % epoch)
+        logger.info('Average train time per epoch: %.2f +/- %.2f' % (mean_train_time, std_train_time))
+
+        final_model = torch.load(snap_dir + args.flow + '.model')
+        validation_loss, validation_bpd = evaluate(val_loader, final_model, args, logger)
+
+    else:
+        validation_loss = "N/A"
+        validation_bpd = "N/A"
+        logger.info(f"Loading model from {args.model_path}")
+        final_model = torch.load(args.model_path)
+
+    test_loss, test_bpd = evaluate(test_loader, final_model, args, logger, testing=True)
+
+    logger.info('FINAL EVALUATION ON VALIDATION SET. ELBO (VAL): {:.4f}'.format(validation_loss))
+    logger.info('FINAL EVALUATION ON TEST SET. NLL (TEST): {:.4f}'.format(test_loss))
+    if args.input_type != 'binary':
+        logger.info('FINAL EVALUATION ON VALIDATION SET. ELBO (VAL) BPD : {:.4f}'.format(validation_bpd))
+        logger.info('FINAL EVALUATION ON TEST SET. NLL (TEST) BPD: {:.4f}'.format(test_bpd))
+
+
+if __name__ == "__main__":
+
+    run(args, kwargs)
+
+Namespace(atol=1e-05, batch_norm=False, batch_size=100, bn_lag=0, cuda=True, dataset='mnist', dims='512-512', divergence_fn='approximate', early_stopping_epochs=35, epochs=2000, evaluate=False, flow='no_flow', freyseed=123, gpu_num=0, layer_type='concat', learning_rate=0.0005, log_interval=10, made_h_size=320, manual_seed=67354, max_beta=1.0, min_beta=0.0, model_path='', model_signature='2019-03-18_23_13_59', no_cuda=False, nonlinearity='softplus', num_blocks=1, num_flows=4, num_householder=8, num_ortho_vecs=8, out_dir='snapshots', rademacher=False, rank=1, residual=False, retrain_encoder=False, rtol=1e-05, snap_dir='snapshots\\vae_mnist_no_flow__2019-03-18_23_13_59/', solver='dopri5', step_size=None, test_atol=None, test_rtol=None, test_solver=None, time_length=0.5, train_T=False, warmup=100, z_size=64)
+Model on GPU
+VAE(
+  (q_z_nn): Sequential(
+    (0): GatedConv2d(
+      (sigmoid): Sigmoid()
+      (h): Conv2d(1, 32, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+      (g): Conv2d(1, 32, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+    )
+    (1): GatedConv2d(
+      (sigmoid): Sigmoid()
+      (h): Conv2d(32, 32, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2))
+      (g): Conv2d(32, 32, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2))
+    )
+    (2): GatedConv2d(
+      (sigmoid): Sigmoid()
+      (h): Conv2d(32, 64, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+      (g): Conv2d(32, 64, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+    )
+    (3): GatedConv2d(
+      (sigmoid): Sigmoid()
+      (h): Conv2d(64, 64, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2))
+      (g): Conv2d(64, 64, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2))
+    )
+    (4): GatedConv2d(
+      (sigmoid): Sigmoid()
+      (h): Conv2d(64, 64, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+      (g): Conv2d(64, 64, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+    )
+    (5): GatedConv2d(
+      (sigmoid): Sigmoid()
+      (h): Conv2d(64, 256, kernel_size=(7, 7), stride=(1, 1))
+      (g): Conv2d(64, 256, kernel_size=(7, 7), stride=(1, 1))
+    )
+  )
+  (q_z_mean): Linear(in_features=256, out_features=64, bias=True)
+  (q_z_var): Sequential(
+    (0): Linear(in_features=256, out_features=64, bias=True)
+    (1): Softplus(beta=1, threshold=20)
+  )
+  (p_x_nn): Sequential(
+    (0): GatedConvTranspose2d(
+      (sigmoid): Sigmoid()
+      (h): ConvTranspose2d(64, 64, kernel_size=(7, 7), stride=(1, 1))
+      (g): ConvTranspose2d(64, 64, kernel_size=(7, 7), stride=(1, 1))
+    )
+    (1): GatedConvTranspose2d(
+      (sigmoid): Sigmoid()
+      (h): ConvTranspose2d(64, 64, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+      (g): ConvTranspose2d(64, 64, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+    )
+    (2): GatedConvTranspose2d(
+      (sigmoid): Sigmoid()
+      (h): ConvTranspose2d(64, 32, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2), output_padding=(1, 1))
+      (g): ConvTranspose2d(64, 32, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2), output_padding=(1, 1))
+    )
+    (3): GatedConvTranspose2d(
+      (sigmoid): Sigmoid()
+      (h): ConvTranspose2d(32, 32, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+      (g): ConvTranspose2d(32, 32, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+    )
+    (4): GatedConvTranspose2d(
+      (sigmoid): Sigmoid()
+      (h): ConvTranspose2d(32, 32, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2), output_padding=(1, 1))
+      (g): ConvTranspose2d(32, 32, kernel_size=(5, 5), stride=(2, 2), padding=(2, 2), output_padding=(1, 1))
+    )
+    (5): GatedConvTranspose2d(
+      (sigmoid): Sigmoid()
+      (h): ConvTranspose2d(32, 32, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+      (g): ConvTranspose2d(32, 32, kernel_size=(5, 5), stride=(1, 1), padding=(2, 2))
+    )
+  )
+  (p_x_mean): Sequential(
+    (0): Conv2d(32, 1, kernel_size=(1, 1), stride=(1, 1))
+    (1): Sigmoid()
+  )
+)
+beta = 0.0100
+Epoch   1 [  100/50000 ( 0%)] | Time 1.571 | Loss  496.247375 | Rec  496.228882 | KL    1.846786
+Epoch   1 [ 1100/50000 ( 2%)] | Time 0.160 | Loss  475.420349 | Rec  475.412811 | KL    0.754776
+Epoch   1 [ 2100/50000 ( 4%)] | Time 0.157 | Loss  409.065887 | Rec  407.131958 | KL  193.394409
+Epoch   1 [ 3100/50000 ( 6%)] | Time 0.152 | Loss  402.616791 | Rec  402.257416 | KL   35.935833
+Epoch   1 [ 4100/50000 ( 8%)] | Time 0.149 | Loss  369.888306 | Rec  369.418396 | KL   46.992107
+Epoch   1 [ 5100/50000 (10%)] | Time 0.151 | Loss  362.790802 | Rec  362.416168 | KL   37.466141
+Epoch   1 [ 6100/50000 (12%)] | Time 0.168 | Loss  344.174103 | Rec  343.707092 | KL   46.700096
+Epoch   1 [ 7100/50000 (14%)] | Time 0.151 | Loss  302.877594 | Rec  301.090027 | KL  178.758728
+Epoch   1 [ 8100/50000 (16%)] | Time 0.151 | Loss  275.968506 | Rec  273.084351 | KL  288.416138
+Epoch   1 [ 9100/50000 (18%)] | Time 0.151 | Loss  258.135803 | Rec  256.170349 | KL  196.545212
+Epoch   1 [10100/50000 (20%)] | Time 0.162 | Loss  261.510864 | Rec  259.589935 | KL  192.094025
+Epoch   1 [11100/50000 (22%)] | Time 0.163 | Loss  238.038132 | Rec  236.145233 | KL  189.290802
+Epoch   1 [12100/50000 (24%)] | Time 0.157 | Loss  254.869949 | Rec  252.995331 | KL  187.463593
+Epoch   1 [13100/50000 (26%)] | Time 0.161 | Loss  233.583588 | Rec  231.142883 | KL  244.071243
+Epoch   1 [14100/50000 (28%)] | Time 0.144 | Loss  237.214096 | Rec  234.700333 | KL  251.376358
+Epoch   1 [15100/50000 (30%)] | Time 0.150 | Loss  225.122726 | Rec  221.918320 | KL  320.441132
+Epoch   1 [16100/50000 (32%)] | Time 0.152 | Loss  223.741165 | Rec  220.534454 | KL  320.672211
+Epoch   1 [17100/50000 (34%)] | Time 0.155 | Loss  220.847610 | Rec  217.940308 | KL  290.729889
+Epoch   1 [18100/50000 (36%)] | Time 0.158 | Loss  217.315445 | Rec  214.758026 | KL  255.741592
+Epoch   1 [19100/50000 (38%)] | Time 0.165 | Loss  213.734467 | Rec  211.171539 | KL  256.293732
+Epoch   1 [20100/50000 (40%)] | Time 0.151 | Loss  205.673065 | Rec  203.106827 | KL  256.622375
+Epoch   1 [21100/50000 (42%)] | Time 0.159 | Loss  218.035858 | Rec  215.537598 | KL  249.827087
+Epoch   1 [22100/50000 (44%)] | Time 0.145 | Loss  213.231628 | Rec  210.581909 | KL  264.972443
+Epoch   1 [23100/50000 (46%)] | Time 0.163 | Loss  211.861481 | Rec  209.225174 | KL  263.630768
+Epoch   1 [24100/50000 (48%)] | Time 0.154 | Loss  210.300369 | Rec  207.570145 | KL  273.020874
+Epoch   1 [25100/50000 (50%)] | Time 0.166 | Loss  218.556366 | Rec  215.989929 | KL  256.643127
+Epoch   1 [26100/50000 (52%)] | Time 0.154 | Loss  206.056305 | Rec  203.168671 | KL  288.763000
+Epoch   1 [27100/50000 (54%)] | Time 0.147 | Loss  202.021713 | Rec  199.049683 | KL  297.203735
+Epoch   1 [28100/50000 (56%)] | Time 0.143 | Loss  201.900818 | Rec  198.891281 | KL  300.952850
+Epoch   1 [29100/50000 (58%)] | Time 0.159 | Loss  209.805969 | Rec  207.004272 | KL  280.168976
+Epoch   1 [30100/50000 (60%)] | Time 0.148 | Loss  199.555191 | Rec  196.825653 | KL  272.952972
+Epoch   1 [31100/50000 (62%)] | Time 0.156 | Loss  201.459427 | Rec  198.649414 | KL  281.001373
+Epoch   1 [32100/50000 (64%)] | Time 0.151 | Loss  199.585678 | Rec  196.911087 | KL  267.458374
+Epoch   1 [33100/50000 (66%)] | Time 0.152 | Loss  202.991989 | Rec  200.404404 | KL  258.757324
+Epoch   1 [34100/50000 (68%)] | Time 0.160 | Loss  202.628586 | Rec  200.108200 | KL  252.038712
+Epoch   1 [35100/50000 (70%)] | Time 0.168 | Loss  202.455246 | Rec  199.976074 | KL  247.918823
+Epoch   1 [36100/50000 (72%)] | Time 0.153 | Loss  206.660110 | Rec  204.288040 | KL  237.206924
+Epoch   1 [37100/50000 (74%)] | Time 0.162 | Loss  198.714447 | Rec  196.362518 | KL  235.192886
+Epoch   1 [38100/50000 (76%)] | Time 0.150 | Loss  190.989044 | Rec  188.509689 | KL  247.936127
+Epoch   1 [39100/50000 (78%)] | Time 0.152 | Loss  197.397034 | Rec  195.107651 | KL  228.937241
+Epoch   1 [40100/50000 (80%)] | Time 0.220 | Loss  193.893127 | Rec  191.695419 | KL  219.770264
+Epoch   1 [41100/50000 (82%)] | Time 0.152 | Loss  201.659531 | Rec  199.592789 | KL  206.674286
+Epoch   1 [42100/50000 (84%)] | Time 0.149 | Loss  205.815323 | Rec  203.689102 | KL  212.622360
+Epoch   1 [43100/50000 (86%)] | Time 0.157 | Loss  190.121414 | Rec  187.988739 | KL  213.267746
+Epoch   1 [44100/50000 (88%)] | Time 0.169 | Loss  197.991150 | Rec  196.045273 | KL  194.587601
+Epoch   1 [45100/50000 (90%)] | Time 0.170 | Loss  199.038940 | Rec  197.016602 | KL  202.234482
+Epoch   1 [46100/50000 (92%)] | Time 0.152 | Loss  193.433487 | Rec  191.372726 | KL  206.076950
+Epoch   1 [47100/50000 (94%)] | Time 0.162 | Loss  201.838791 | Rec  199.765656 | KL  207.312805
+Epoch   1 [48100/50000 (96%)] | Time 0.167 | Loss  201.188538 | Rec  199.265625 | KL  192.291153
+Epoch   1 [49100/50000 (98%)] | Time 0.152 | Loss  196.267242 | Rec  194.338806 | KL  192.842850
