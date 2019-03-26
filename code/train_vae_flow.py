@@ -1,5 +1,6 @@
 # !/usr/bin/env python
 # -*- coding: utf-8 -*-
+#train VAE with flows
 
 from __future__ import print_function
 import argparse

@@ -1,3 +1,5 @@
+#helpers for FFJORD train
+
 import six
 import math
 

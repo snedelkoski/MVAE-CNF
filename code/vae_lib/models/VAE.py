@@ -1,3 +1,4 @@
+#VAE baseclass for CNFVAE
 from __future__ import print_function
 
 import torch
