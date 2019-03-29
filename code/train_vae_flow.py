@@ -4,23 +4,26 @@
 
 from __future__ import print_function
 import argparse
+import sys
 import time
 import torch
 import torch.utils.data
 import torch.optim as optim
 import numpy as np
-import math
 import random
-
+from code.vae_lib.optimization.loss import calculate_loss, elbo_loss
 import os
 
+from torch.autograd import Variable
+from torchvision import transforms
 import datetime
-
+from torchvision.datasets import MNIST
 import lib.utils as utils
 import lib.layers.odefunc as odefunc
 
 import code.vae_lib.models.VAE as VAE
 import code.vae_lib.models.CNFVAE as CNFVAE
+from code.vae_lib.models.train import AverageMeter, save_checkpoint
 from code.vae_lib.optimization.training import train, evaluate
 from code.vae_lib.utils.load_data import load_dataset
 from code.vae_lib.utils.plotting import plot_training_curve
@@ -55,7 +58,7 @@ parser.add_argument(
 
 # optimization settings
 parser.add_argument(
-    '-e', '--epochs', type=int, default=2000, metavar='EPOCHS', help='number of epochs to train (default: 2000)'
+    '-e', '--epochs', type=int, default=10, metavar='EPOCHS', help='number of epochs to train (default: 2000)'
 )
 parser.add_argument(
     '-es', '--early_stopping_epochs', type=int, default=35, metavar='EARLY_STOPPING',
@@ -63,9 +66,9 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '-bs', '--batch_size', type=int, default=256, metavar='BATCH_SIZE', help='input batch size for training'
+    '-bs', '--batch_size', type=int, default=2046, metavar='BATCH_SIZE', help='input batch size for training'
 )
-parser.add_argument('-lr', '--learning_rate', type=float, default=0.0005, metavar='LEARNING_RATE', help='learning rate')
+parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3, metavar='LEARNING_RATE', help='learning rate')
 
 parser.add_argument(
     '-w', '--warmup', type=int, default=100, metavar='N',
@@ -131,6 +134,8 @@ parser.add_argument('--bn_lag', type=float, default=0)
 parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False])
 parser.add_argument('--model_path', type=str, default='')
 parser.add_argument('--retrain_encoder', type=eval, default=False, choices=[True, False])
+parser.add_argument('--annealing-epochs', type=int, default=5, metavar='N',
+                        help='number of epochs to anneal KL for [default: 200]')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -201,7 +206,19 @@ def run(args, kwargs):
     # ==================================================================================================================
     # LOAD DATA
     # ==================================================================================================================
-    train_loader, val_loader, test_loader, args = load_dataset(args, **kwargs)
+    #train_loader, val_loader, test_loader, args = load_dataset(args, **kwargs)
+    args.dynamic_binarization = False
+    args.input_type = 'binary'
+
+    args.input_size = [1, 28, 28]
+    train_loader = torch.utils.data.DataLoader(
+        MNIST('./data', train=True, download=True, transform=transforms.ToTensor()),
+        batch_size=args.batch_size, shuffle=True)
+    N_mini_batches = len(train_loader)
+    test_loader = torch.utils.data.DataLoader(
+        MNIST('./data', train=False, download=True, transform=transforms.ToTensor()),
+        batch_size=args.batch_size, shuffle=False)
+
 
     if not args.evaluate:
 
@@ -260,99 +277,107 @@ def run(args, kwargs):
         else:
             parameters = model.parameters()
 
-        optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
-
+        #optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
+        optimizer = optim.Adam(parameters, args.learning_rate)
         # ==================================================================================================================
-        # TRAINING
+        # TRAINING AND EVALUATION
         # ==================================================================================================================
-        train_loss = []
-        val_loss = []
+        def train(epoch):
+            beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
+            model.train()
+            train_loss_meter = AverageMeter()
+            # NOTE: is_paired is 1 if the example is paired
+            for batch_idx, (image, text) in enumerate(train_loader):
+                if epoch < args.annealing_epochs:
+                    # compute the KL annealing factor for the current mini-batch in the current epoch
+                    annealing_factor = (float(batch_idx + (epoch - 1) * N_mini_batches + 1) /
+                                        float(args.annealing_epochs * N_mini_batches))
+                else:
+                    # by default the KL annealing factor is unity
+                    annealing_factor = 1.0
 
-        # for early stopping
-        best_loss = np.inf
-        best_bpd = np.inf
-        e = 0
-        epoch = 0
+                if args.cuda:
+                    image = image.cuda()
+                    text = text.cuda()
 
-        train_times = []
+                image = Variable(image)
+                text = Variable(text)
 
+                batch_size = len(image)
+
+                # refresh the optimizer
+                optimizer.zero_grad()
+
+                # pass data through model
+                recon_image_1, recon_text_1, mu_1, logvar_1, logj1, z01, zk1 = model(image, text)
+                recon_image_2, recon_text_2, mu_2, logvar_2, logj2, z02, zk2 = model(image)
+                recon_image_3, recon_text_3, mu_3, logvar_3, logj3, z03, zk3 = model(text=text)
+
+                # compute ELBO for each data combo
+                joint_loss, rec1_1, rec1_2, kl_1 = elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1, z01, zk1, logj1,
+                                           args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
+                image_loss, rec1_2, rec2_2, kl_2= elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, z02, zk2, logj2,
+                                                      args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
+                #text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,
+                #                                     args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
+
+                train_loss = joint_loss + image_loss# ovie se tie 3 losses, za sekoja kombinacija poedinecno ama aj so 2 ke testiram
+                train_loss_meter.update(train_loss.item(), batch_size)
+                # compute gradients and take step
+                train_loss.backward()
+                optimizer.step()
+                print("Projde step")
+                if batch_idx % args.log_interval == 0:
+                    print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
+                        epoch, batch_idx * len(image), len(train_loader.dataset),
+                               100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
+
+            print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
+
+        def test(epoch):
+            model.eval()
+            beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
+            test_loss_meter = AverageMeter()
+
+            for batch_idx, (image, text) in enumerate(test_loader):
+                if args.cuda:
+                    image = image.cuda()
+                    text = text.cuda()
+                image = Variable(image, volatile=True)
+                text = Variable(text, volatile=True)
+                batch_size = len(image)
+                #with torch.no_grad():
+                #batch_size = len(image)
+                recon_image_1, recon_text_1, mu_1, logvar_1, logj1, z01, zk1 = model(image, text)
+                recon_image_2, recon_text_2, mu_2, logvar_2, logj2, z02, zk2 = model(image)
+                recon_image_3, recon_text_3, mu_3, logvar_3, logj3, z03, zk3 = model(text=text)
+
+                # compute ELBO for each data combo
+                joint_loss, rec1, rec2, kl = elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1, z01, zk1, logj1,args)
+                image_loss, rec1, rec2, kl = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, z02, zk2, logj2, args)
+                #text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,args)
+                # test_loss = joint_loss + image_loss + text_loss
+                test_loss = joint_loss+image_loss
+
+                test_loss_meter.update(test_loss.item(), batch_size)
+
+            print('====> Test Loss: {:.4f}'.format(test_loss_meter.avg))
+            return test_loss_meter.avg
+
+        best_loss = sys.maxsize
         for epoch in range(1, args.epochs + 1):
-
-            t_start = time.time()
-            tr_loss = train(epoch, train_loader, model, optimizer, args, logger)
-
-            train_loss.append(tr_loss)
-            train_times.append(time.time() - t_start)
-            logger.info('One training epoch took %.2f seconds' % (time.time() - t_start))
-
-            v_loss, v_bpd = evaluate(val_loader, model, args, logger, epoch=epoch)
-
-            val_loss.append(v_loss)
-
-            # early-stopping
-            if v_loss < best_loss:
-                e = 0
-                best_loss = v_loss
-                if args.input_type != 'binary':
-                    best_bpd = v_bpd
-                logger.info('->model saved<-')
-                torch.save(model, snap_dir + args.flow + '.model')
-                # torch.save(model, snap_dir + args.flow + '_' + args.architecture + '.model')
-
-            elif (args.early_stopping_epochs > 0) and (epoch >= args.warmup):
-                e += 1
-                if e > args.early_stopping_epochs:
-                    break
-
-            if args.input_type == 'binary':
-                logger.info(
-                    '--> Early stopping: {}/{} (BEST: loss {:.4f})\n'.format(e, args.early_stopping_epochs, best_loss)
-                )
-
-            else:
-                logger.info(
-                    '--> Early stopping: {}/{} (BEST: loss {:.4f}, bpd {:.4f})\n'.
-                    format(e, args.early_stopping_epochs, best_loss, best_bpd)
-                )
-
-            if math.isnan(v_loss):
-                raise ValueError('NaN encountered!')
-
-        train_loss = np.hstack(train_loss)
-        val_loss = np.array(val_loss)
-
-        plot_training_curve(train_loss, val_loss, fname=snap_dir + '/training_curve_%s.pdf' % args.flow)
-
-        # training time per epoch
-        train_times = np.array(train_times)
-        mean_train_time = np.mean(train_times)
-        std_train_time = np.std(train_times, ddof=1)
-        logger.info('Average train time per epoch: %.2f +/- %.2f' % (mean_train_time, std_train_time))
-
-        # ==================================================================================================================
-        # EVALUATION
-        # ==================================================================================================================
-
-        logger.info(args)
-        logger.info('Stopped after %d epochs' % epoch)
-        logger.info('Average train time per epoch: %.2f +/- %.2f' % (mean_train_time, std_train_time))
-
-        final_model = torch.load(snap_dir + args.flow + '.model')
-        validation_loss, validation_bpd = evaluate(val_loader, final_model, args, logger)
-
-    else:
-        validation_loss = "N/A"
-        validation_bpd = "N/A"
-        logger.info(f"Loading model from {args.model_path}")
-        final_model = torch.load(args.model_path)
-
-    test_loss, test_bpd = evaluate(test_loader, final_model, args, logger, testing=True)
-
-    logger.info('FINAL EVALUATION ON VALIDATION SET. ELBO (VAL): {:.4f}'.format(validation_loss))
-    logger.info('FINAL EVALUATION ON TEST SET. NLL (TEST): {:.4f}'.format(test_loss))
-    if args.input_type != 'binary':
-        logger.info('FINAL EVALUATION ON VALIDATION SET. ELBO (VAL) BPD : {:.4f}'.format(validation_bpd))
-        logger.info('FINAL EVALUATION ON TEST SET. NLL (TEST) BPD: {:.4f}'.format(test_bpd))
+            train(epoch)
+            #print ("Test")
+            test_loss = test(epoch)
+            is_best   = test_loss < best_loss
+            best_loss = min(test_loss, best_loss)
+            # save the best model and current model
+            save_checkpoint({
+                'state_dict': model.state_dict(),
+                'best_loss': best_loss,
+                'n_latents': args.z_size,
+                'optimizer' : optimizer.state_dict(),
+            }, is_best, folder='./trained_models')
 
 
 if __name__ == "__main__":

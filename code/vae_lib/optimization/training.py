@@ -34,10 +34,11 @@ def train(epoch, train_loader, model, opt, args, logger):
         opt.zero_grad()
         x_mean, z_mu, z_var, ldj, z0, zk = model(data)
 
+
         if 'cnf' in args.flow:
             f_nfe = count_nfe(model)
 
-        loss, rec, kl, bpd = calculate_loss(x_mean, data, z_mu, z_var, z0, zk, ldj, args, beta=beta)
+        loss, rec1, rec2, kl, bpd = calculate_loss(x_mean, data, z_mu, z_var, z0, zk, ldj, args, beta=beta)
 
         loss.backward()
 
@@ -63,8 +64,9 @@ def train(epoch, train_loader, model, opt, args, logger):
                 perc = 100. * batch_idx / len(train_loader)
                 log_msg = (
                     'Epoch {:3d} [{:5d}/{:5d} ({:2.0f}%)] | Time {:.3f} | Loss {:11.6f} | '
-                    'Rec {:11.6f} | KL {:11.6f}'.format(
-                        epoch, num_data, len(train_loader.sampler), perc, batch_time, loss.item(), rec, kl
+                    'Rec1 {:11.6f} | '
+                    'Rec2 {:11.6f} |' ' KL {:11.6f}'.format(
+                        epoch, num_data, len(train_loader.sampler), perc, batch_time, loss.item(), rec1, rec2, kl
                     )
                 )
             else:

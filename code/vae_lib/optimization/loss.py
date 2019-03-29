@@ -3,11 +3,12 @@ from __future__ import print_function
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.autograd import Variable
+
 from code.vae_lib.utils.distributions import log_normal_diag, log_normal_standard, log_bernoulli
 import torch.nn.functional as F
 
-
-def binary_loss_function(recon_x, x, z_mu, z_var, z_0, z_k, ldj, beta=1.):
+def binary_loss_function(recon_x1, x1, recon_x2, x2, z_mu, z_var, z_0, z_k, ldj, beta=1.):
     """
     Computes the binary loss function while summing over batch dimension, not averaged!
     :param recon_x: shape: (batch_size, num_channels, pixel_width, pixel_height), bernoulli parameters p(x=1)
@@ -22,12 +23,18 @@ def binary_loss_function(recon_x, x, z_mu, z_var, z_0, z_k, ldj, beta=1.):
     """
 
     reconstruction_function = nn.BCELoss(size_average=False)
-
-    batch_size = x.size(0)
+    if x1 is not None:
+        batch_size = x1.size(0)
+    if x2 is not None:
+        batch_size = x2.size(0)
 
     # - N E_q0 [ ln p(x|z_k) ]
-    bce = reconstruction_function(recon_x, x)
-
+    bce1 = 0
+    bce2 = 0
+    if recon_x1 is not None and x1 is not None:
+        bce1 = reconstruction_function(recon_x1, x1)
+    if recon_x2 is not None and x2 is not None:
+        bce2 = reconstruction_function(recon_x2, x2)
     # ln p(z_k)  (not averaged)
     log_p_zk = log_normal_standard(z_k, dim=1)
     # ln q(z_0)  (not averaged)
@@ -40,13 +47,15 @@ def binary_loss_function(recon_x, x, z_mu, z_var, z_0, z_k, ldj, beta=1.):
 
     # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
     kl = (summed_logs - summed_ldj)
-    loss = bce + beta * kl
+    loss = bce1 + bce2 + beta * kl
 
     loss = loss / float(batch_size)
-    bce = bce / float(batch_size)
+    bce1 = bce1 / float(batch_size)
+    bce2 = bce2 / float(batch_size)
+
     kl = kl / float(batch_size)
 
-    return loss, bce, kl
+    return loss, bce1, bce2, kl
 
 
 def multinomial_loss_function(x_logit, x, z_mu, z_var, z_0, z_k, ldj, args, beta=1.):
@@ -235,23 +244,23 @@ def nll_loss(input, target, weight=None, size_average=True, ignore_index=-100, r
         raise ValueError('Expected 2 or more dimensions (got {})'.format(dim))
 
 
-def calculate_loss(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args, beta=1.):
+def calculate_loss(x_mean1, x1, x_mean2, x2, z_mu, z_var, z_0, z_k, ldj, args, beta=1.):
     """
     Picks the correct loss depending on the input type.
     """
 
     if args.input_type == 'binary':
-        loss, rec, kl = binary_loss_function(x_mean, x, z_mu, z_var, z_0, z_k, ldj, beta=beta)
+        loss, rec1, rec2, kl = binary_loss_function(x_mean1, x1, x_mean2, x2, z_mu, z_var, z_0, z_k, ldj, beta=beta)
         bpd = 0.
 
-    elif args.input_type == 'multinomial':
-        loss, rec, kl = multinomial_loss_function(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args, beta=beta)
-        bpd = loss.data[0] / (np.prod(args.input_size) * np.log(2.))
+    #elif args.input_type == 'multinomial':
+    #    loss, rec, kl = multinomial_loss_function(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args, beta=beta)
+    #    bpd = loss.data[0] / (np.prod(args.input_size) * np.log(2.))
 
     else:
         raise ValueError('Invalid input type for calculate loss: %s.' % args.input_type)
 
-    return loss, rec, kl, bpd
+    return loss, rec1, rec2, kl, bpd
 
 
 def calculate_loss_array(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args):
@@ -269,3 +278,71 @@ def calculate_loss_array(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args):
         raise ValueError('Invalid input type for calculate loss: %s.' % args.input_type)
 
     return loss
+
+
+
+####################################
+def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj, args, lambda_image=1.0, lambda_text=1.0, annealing_factor=1, beta=1.):
+    """Bimodal ELBO loss function.
+    """
+    # ln p(z_k)  (not averaged)
+    log_p_zk = log_normal_standard(z_k, dim=1)
+    # ln q(z_0)  (not averaged)
+    log_q_z0 = log_normal_diag(z_0, mean=z_mu, log_var=z_var, dim=1)
+    # N E_q0[ ln q(z_0) - ln p(z_k) ]
+    #summed_logs = torch.sum(log_q_z0 - log_p_zk)
+    logs = log_q_z0 - log_p_zk
+    # sum over batches
+    #summed_ldj = torch.sum(ldj)
+
+    # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
+    kl = logs.sub(ldj).to(torch.double)
+
+    image_bce, text_bce = 0, 0  # default params
+    if recon_image is not None and image is not None:
+        image_bce = torch.sum(binary_cross_entropy_with_logits(
+            recon_image.view(-1, 1 * 28 * 28),
+            image.view(-1, 1 * 28 * 28)), dim=1, dtype=torch.double)
+
+    if recon_text is not None and text is not None:
+        text_bce = torch.sum(cross_entropy(recon_text, text), dim=1, dtype=torch.double)
+    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+    # https://arxiv.org/abs/1312.6114
+
+    ELBO = torch.mean(lambda_image * image_bce + lambda_text * text_bce + annealing_factor * kl)
+
+    return ELBO, image_bce, text_bce, kl
+
+
+def binary_cross_entropy_with_logits(input, target):
+    """Sigmoid Activation + Binary Cross Entropy
+
+    @param input: torch.Tensor (size N)
+    @param target: torch.Tensor (size N)
+    @return loss: torch.Tensor (size N)
+    """
+    if not (target.size() == input.size()):
+        raise ValueError("Target size ({}) must be the same as input size ({})".format(
+            target.size(), input.size()))
+
+    return (torch.clamp(input, 0) - input * target
+            + torch.log(1 + torch.exp(-torch.abs(input))))
+
+
+def cross_entropy(input, target, eps=1e-6):
+    """k-Class Cross Entropy (Log Softmax + Log Loss)
+
+    @param input: torch.Tensor (size N x K)
+    @param target: torch.Tensor (size N x K)
+    @param eps: error to add (default: 1e-6)
+    @return loss: torch.Tensor (size N)
+    """
+    if not (target.size(0) == input.size(0)):
+        raise ValueError(
+            "Target size ({}) must be the same as input size ({})".format(
+                target.size(0), input.size(0)))
+    log_input = F.log_softmax(input.to(torch.double) + eps, dim=1)
+    y_onehot = Variable(log_input.data.new(log_input.size()).zero_())
+    y_onehot = y_onehot.scatter(1, target.unsqueeze(1), 1)
+    loss = y_onehot * log_input
+    return -loss

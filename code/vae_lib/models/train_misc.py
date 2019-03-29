@@ -196,7 +196,6 @@ def build_model_tabular(args, dims, regularization_fns=None):
             bn_chain.append(b)
         chain = bn_chain
     model = layers.SequentialFlow(chain)
-
     set_cnf_options(args, model)
 
     return model
