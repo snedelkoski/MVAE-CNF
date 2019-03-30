@@ -13,6 +13,11 @@ def get_hidden_dims(args):
 
 def concat_layer_num_params(in_dim, out_dim):
     return (in_dim + 1) * out_dim + out_dim
+def conv3x3(in_planes, out_planes, stride=1):
+    """3x3 convolution with padding"""
+    return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                     padding=1, bias=False)
+
 
 
 class CNFVAE(VAE):
@@ -31,6 +36,27 @@ class CNFVAE(VAE):
         if args.cuda:
             self.cuda()
 
+
+    def forward(self, image=None, text=None):
+        """
+        Forward pass with planar flows for the transformation z_0 -> z_1 -> ... -> z_k.
+        Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
+        """
+
+        z_mu, z_var = self.encode(image, text)
+        # Sample z_0
+        z0 = self.reparameterize(z_mu, z_var)
+        z0 = z0.to(torch.float32).cuda()
+        if image is not None:
+            zero = torch.zeros(image.shape[0], 1).to(torch.float32).cuda()
+        elif text is not None:
+            zero = torch.zeros(text.shape[0], 1).to(torch.float32).cuda()
+
+        zk, delta_logp = self.cnf(z0, zero)  # run model forward
+        image_rec = self.image_decoder(zk)
+        text_rec = self.text_decoder(zk)
+
+        return image_rec, text_rec, z_mu, z_var, -delta_logp.view(-1), z0, zk
 
     def encode(self, image=None, text=None):
         """
@@ -67,26 +93,7 @@ class CNFVAE(VAE):
 
         return mu, logvar
 
-    def forward(self, image=None, text=None):
-        """
-        Forward pass with planar flows for the transformation z_0 -> z_1 -> ... -> z_k.
-        Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
-        """
 
-        z_mu, z_var = self.encode(image, text)
-        # Sample z_0
-        z0 = self.reparameterize(z_mu, z_var)
-        z0 = z0.to(torch.float32).cuda()
-        if image is not None:
-            zero = torch.zeros(image.shape[0], 1).to(torch.float32).cuda()
-        elif text is not None:
-            zero = torch.zeros(text.shape[0], 1).to(torch.float32).cuda()
-
-        zk, delta_logp = self.cnf(z0, zero)  # run model forward
-        image_rec = self.image_decoder(zk)
-        text_rec = self.text_decoder(zk)
-
-        return image_rec, text_rec, z_mu, z_var, -delta_logp.view(-1), z0, zk
 
     def reparameterize(self, mu, var):
         """

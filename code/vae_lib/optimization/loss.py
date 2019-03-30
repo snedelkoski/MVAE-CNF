@@ -282,7 +282,7 @@ def calculate_loss_array(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args):
 
 
 ####################################
-def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj, args, lambda_image=1.0, lambda_text=1.0, annealing_factor=1, beta=1.):
+def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj, args, lambda_image=1.0, lambda_text=10.0, annealing_factor=1.0, beta=1.):
     """Bimodal ELBO loss function.
     """
     # ln p(z_k)  (not averaged)
@@ -298,7 +298,7 @@ def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj,
     # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
     kl = logs.sub(ldj).to(torch.double)
 
-    image_bce, text_bce = 0, 0  # default params
+    image_bce, text_bce = 0.0, 0.0  # default params
     if recon_image is not None and image is not None:
         image_bce = torch.sum(binary_cross_entropy_with_logits(
             recon_image.view(-1, 1 * 28 * 28),

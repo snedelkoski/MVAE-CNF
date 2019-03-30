@@ -44,10 +44,10 @@ parser.add_argument(
 
 parser.add_argument('-nc', '--no_cuda', action='store_true', default=False, help='disables CUDA training')
 
-parser.add_argument('--manual_seed', type=int, help='manual seed, if not given resorts to random seed.')
+parser.add_argument('--manual_seed', default=10, type=int, help='manual seed, if not given resorts to random seed.')
 
 parser.add_argument(
-    '-li', '--log_interval', type=int, default=10, metavar='LOG_INTERVAL',
+    '-li', '--log_interval', type=int, default=1, metavar='LOG_INTERVAL',
     help='how many batches to wait before logging training status'
 )
 
@@ -66,7 +66,7 @@ parser.add_argument(
 )
 
 parser.add_argument(
-    '-bs', '--batch_size', type=int, default=2046, metavar='BATCH_SIZE', help='input batch size for training'
+    '-bs', '--batch_size', type=int, default=2048, metavar='BATCH_SIZE', help='input batch size for training'
 )
 parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3, metavar='LEARNING_RATE', help='learning rate')
 
@@ -117,7 +117,7 @@ parser.add_argument('--train_T', type=eval, default=False)
 parser.add_argument("--divergence_fn", type=str, default="approximate", choices=["brute_force", "approximate"])
 parser.add_argument("--nonlinearity", type=str, default="softplus", choices=odefunc.NONLINEARITIES)
 
-parser.add_argument('--solver', type=str, default='dopri5', choices=SOLVERS)
+parser.add_argument('--solver', type=str, default='midpoint', choices=SOLVERS)
 parser.add_argument('--atol', type=float, default=1e-5)
 parser.add_argument('--rtol', type=float, default=1e-5)
 parser.add_argument("--step_size", type=float, default=None, help="Optional fixed step size.")
@@ -144,6 +144,7 @@ if args.manual_seed is None:
     args.manual_seed = random.randint(1, 100000)
 random.seed(args.manual_seed)
 torch.manual_seed(args.manual_seed)
+torch.manual_seed(0)
 np.random.seed(args.manual_seed)
 
 if args.cuda:
@@ -318,15 +319,15 @@ def run(args, kwargs):
                                            args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
                 image_loss, rec1_2, rec2_2, kl_2= elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, z02, zk2, logj2,
                                                       args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
-                #text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,
-                #                                     args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
-
-                train_loss = joint_loss + image_loss# ovie se tie 3 losses, za sekoja kombinacija poedinecno ama aj so 2 ke testiram
+                text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,
+                                                     args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
+                #print("TEXT SHAPE", text_loss.shape, "TEXTLOSS",text_loss, image_loss.shape, image_loss)
+                train_loss = image_loss + text_loss + joint_loss # joint_loss# ovie se tie 3 losses, za sekoja kombinacija poedinecno ama aj so 2 ke testiram
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
                 train_loss.backward()
                 optimizer.step()
-                print("Projde step")
+
                 if batch_idx % args.log_interval == 0:
                     print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
                         epoch, batch_idx * len(image), len(train_loader.dataset),
@@ -355,9 +356,9 @@ def run(args, kwargs):
                 # compute ELBO for each data combo
                 joint_loss, rec1, rec2, kl = elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1, z01, zk1, logj1,args)
                 image_loss, rec1, rec2, kl = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, z02, zk2, logj2, args)
-                #text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,args)
-                # test_loss = joint_loss + image_loss + text_loss
-                test_loss = joint_loss+image_loss
+                text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,args)
+                test_loss = joint_loss + image_loss + text_loss
+                #test_loss = joint_loss+image_loss
 
                 test_loss_meter.update(test_loss.item(), batch_size)
 
