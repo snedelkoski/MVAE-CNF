@@ -1,8 +1,10 @@
 # !/usr/bin/env python
 # -*- coding: utf-8 -*-
 #train VAE with flows
-
 from __future__ import print_function
+from code.vae_lib.models.train_misc import count_nfe, override_divergence_fn
+
+
 import argparse
 import sys
 import time
@@ -20,6 +22,7 @@ import datetime
 from torchvision.datasets import MNIST
 import lib.utils as utils
 import lib.layers.odefunc as odefunc
+import lib.layers as layers
 
 import code.vae_lib.models.VAE as VAE
 import code.vae_lib.models.CNFVAE as CNFVAE
@@ -27,7 +30,6 @@ from code.vae_lib.models.train import AverageMeter, save_checkpoint
 from code.vae_lib.optimization.training import train, evaluate
 from code.vae_lib.utils.load_data import load_dataset
 from code.vae_lib.utils.plotting import plot_training_curve
-
 SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
 parser = argparse.ArgumentParser(description='PyTorch Sylvester Normalizing flows')
 
@@ -58,7 +60,7 @@ parser.add_argument(
 
 # optimization settings
 parser.add_argument(
-    '-e', '--epochs', type=int, default=10, metavar='EPOCHS', help='number of epochs to train (default: 2000)'
+    '-e', '--epochs', type=int, default=100, metavar='EPOCHS', help='number of epochs to train (default: 2000)'
 )
 parser.add_argument(
     '-es', '--early_stopping_epochs', type=int, default=35, metavar='EARLY_STOPPING',
@@ -71,7 +73,7 @@ parser.add_argument(
 parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3, metavar='LEARNING_RATE', help='learning rate')
 
 parser.add_argument(
-    '-w', '--warmup', type=int, default=100, metavar='N',
+    '-w', '--warmup', type=int, default=10, metavar='N',
     help='number of epochs for warm-up. Set to 0 to turn warmup off.'
 )
 parser.add_argument('--max_beta', type=float, default=1., metavar='MB', help='max beta for warm-up')
@@ -134,7 +136,7 @@ parser.add_argument('--bn_lag', type=float, default=0)
 parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False])
 parser.add_argument('--model_path', type=str, default='')
 parser.add_argument('--retrain_encoder', type=eval, default=False, choices=[True, False])
-parser.add_argument('--annealing-epochs', type=int, default=5, metavar='N',
+parser.add_argument('--annealing-epochs', type=int, default=1, metavar='N',
                         help='number of epochs to anneal KL for [default: 200]')
 
 args = parser.parse_args()
@@ -284,6 +286,7 @@ def run(args, kwargs):
         # TRAINING AND EVALUATION
         # ==================================================================================================================
         def train(epoch):
+            override_divergence_fn(model, "approximate")
             beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
             model.train()
             train_loss_meter = AverageMeter()
@@ -322,7 +325,7 @@ def run(args, kwargs):
                 text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,
                                                      args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
                 #print("TEXT SHAPE", text_loss.shape, "TEXTLOSS",text_loss, image_loss.shape, image_loss)
-                train_loss = image_loss + text_loss + joint_loss # joint_loss# ovie se tie 3 losses, za sekoja kombinacija poedinecno ama aj so 2 ke testiram
+                train_loss = joint_loss + image_loss + text_loss # joint_loss# ovie se tie 3 losses, za sekoja kombinacija poedinecno ama aj so 2 ke testiram
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
                 train_loss.backward()
@@ -336,10 +339,11 @@ def run(args, kwargs):
             print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
 
         def test(epoch):
+
             model.eval()
             beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
             test_loss_meter = AverageMeter()
-
+            override_divergence_fn(model, "brute_force")
             for batch_idx, (image, text) in enumerate(test_loader):
                 if args.cuda:
                     image = image.cuda()
@@ -347,8 +351,7 @@ def run(args, kwargs):
                 image = Variable(image, volatile=True)
                 text = Variable(text, volatile=True)
                 batch_size = len(image)
-                #with torch.no_grad():
-                #batch_size = len(image)
+
                 recon_image_1, recon_text_1, mu_1, logvar_1, logj1, z01, zk1 = model(image, text)
                 recon_image_2, recon_text_2, mu_2, logvar_2, logj2, z02, zk2 = model(image)
                 recon_image_3, recon_text_3, mu_3, logvar_3, logj3, z03, zk3 = model(text=text)
@@ -358,7 +361,6 @@ def run(args, kwargs):
                 image_loss, rec1, rec2, kl = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, z02, zk2, logj2, args)
                 text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,args)
                 test_loss = joint_loss + image_loss + text_loss
-                #test_loss = joint_loss+image_loss
 
                 test_loss_meter.update(test_loss.item(), batch_size)
 
@@ -375,6 +377,7 @@ def run(args, kwargs):
             # save the best model and current model
             save_checkpoint({
                 'state_dict': model.state_dict(),
+                'args':args,
                 'best_loss': best_loss,
                 'n_latents': args.z_size,
                 'optimizer' : optimizer.state_dict(),

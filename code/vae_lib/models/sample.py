@@ -12,7 +12,8 @@ from torch.autograd import Variable
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 
-from train import load_checkpoint
+from code.vae_lib.models.train import load_checkpoint
+from code.vae_lib.models.train_misc import override_divergence_fn
 
 
 def fetch_mnist_image(label):
@@ -50,7 +51,7 @@ if __name__ == "__main__":
     import os
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', type=str, default='trained_models/model_best.pth.tar',help='path to trained model file')
+    parser.add_argument('--model_path', type=str, default='../../trained_models/model_best.pth.tar',help='path to trained model file')
     parser.add_argument('--n-samples', type=int, default=64, 
                         help='Number of images and texts to sample [default: 64]')
     # condition sampling on a particular images
@@ -59,7 +60,7 @@ if __name__ == "__main__":
     # condition sampling on a particular text
     parser.add_argument('--condition-on-text', type=int, default=None, 
                         help='If True, generate images conditioned on a text.')
-    parser.add_argument('--cuda', action='store_true', default=False,
+    parser.add_argument('--cuda', action='store_true', default=True,
                         help='enables CUDA training')
     args = parser.parse_args()
     args.cuda = args.cuda and torch.cuda.is_available()
@@ -99,9 +100,9 @@ if __name__ == "__main__":
             text   = text.cuda()
         mu, logvar = model.infer(image=image, text=text)
         std        = logvar.mul(0.5).exp_()
-
+    zero = torch.zeros(64, 1).to(torch.float32)
     # sample from uniform gaussian
-    sample     = Variable(torch.randn(args.n_samples, model.n_latents))
+    sample     = Variable(torch.randn(args.n_samples, model.z_size))
     if args.cuda:
         sample = sample.cuda()
     # sample from particular gaussian by multiplying + adding
@@ -109,8 +110,9 @@ if __name__ == "__main__":
     std        = std.expand_as(sample)
     sample     = sample.mul(std).add_(mu)
     # generate image and text
-    img_recon  = F.sigmoid(model.image_decoder(sample)).cpu().data
-    txt_recon  = F.log_softmax(model.text_decoder(sample), dim=1).cpu().data
+    override_divergence_fn(model, "brute_force")
+    img_recon  = F.sigmoid(model.image_decoder(model.cnf(sample))).cpu().data
+    txt_recon  = F.log_softmax(model.text_decoder(model.cnf(sample)), dim=1).cpu().data
     
     # save image samples to filesystem
     save_image(img_recon.view(args.n_samples, 1, 28, 28),

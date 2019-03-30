@@ -26,7 +26,7 @@ from code.vae_lib.optimization.training import train, evaluate
 from code.vae_lib.utils.load_data import load_dataset
 from code.vae_lib.utils.plotting import plot_training_curve
 
-from code.vae_lib.models.model import MVAE
+#from code.vae_lib.models.model import MVAE
 
 
 def elbo_loss(recon_image, image, recon_text, text, mu, logvar,
@@ -136,7 +136,8 @@ def save_checkpoint(state, is_best, folder='./', filename='checkpoint.pth.tar'):
 def load_checkpoint(file_path, use_cuda=False):
     checkpoint = torch.load(file_path) if use_cuda else \
         torch.load(file_path, map_location=lambda storage, location: storage)
-    model = MVAE(checkpoint['n_latents'])
+
+    model = CNFVAE.CNFVAE(checkpoint['args'])
     model.load_state_dict(checkpoint['state_dict'])
     return model
 

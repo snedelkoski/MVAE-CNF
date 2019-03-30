@@ -44,7 +44,9 @@ def set_cnf_options(args, model):
 def override_divergence_fn(model, divergence_fn):
 
     def _set(module):
+
         if isinstance(module, layers.ODEfunc):
+
             if divergence_fn == "brute_force":
                 module.divergence_fn = divergence_bf
             elif divergence_fn == "approximate":

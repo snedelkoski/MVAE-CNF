@@ -32,7 +32,7 @@ class CNFVAE(VAE):
         self.text_decoder = TextDecoder(args.z_size)
         self.image_encoder = ImageEncoder(args.z_size)
         self.image_decoder = ImageDecoder(args.z_size)
-
+        self.z_size = args.z_size
         if args.cuda:
             self.cuda()
 
