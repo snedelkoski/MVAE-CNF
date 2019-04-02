@@ -200,9 +200,11 @@ class ImageEncoder(nn.Module):
         self.fc32  = nn.Linear(512, n_latents)
         self.swish = Swish()
 
+
     def forward(self, x):
         h = self.swish(self.fc1(x.view(-1, 784)))
         h = self.swish(self.fc2(h))
+
         return self.fc31(h), self.fc32(h)
 
 

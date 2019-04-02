@@ -36,13 +36,13 @@ class VAE(nn.Module):
         self.q_z_nn_output_dim = 256
 
         # auxiliary
-        if args.cuda:
-            self.FloatTensor = torch.cuda.FloatTensor
-        else:
-            self.FloatTensor = torch.FloatTensor
+        #if args.cuda:
+        #    self.FloatTensor = torch.cuda.FloatTensor
+        #else:
+        #    self.FloatTensor = torch.FloatTensor
 
         # log-det-jacobian = 0 without flows
-        self.log_det_j = self.FloatTensor(1).zero_()
+        #self.log_det_j = self.FloatTensor(1).zero_()
 
 class IAFVAE(VAE):
     """

@@ -2,6 +2,9 @@
 # -*- coding: utf-8 -*-
 #train VAE with flows
 from __future__ import print_function
+
+import torchvision
+
 from code.vae_lib.models.train_misc import count_nfe, override_divergence_fn
 
 
@@ -19,13 +22,14 @@ import os
 from torch.autograd import Variable
 from torchvision import transforms
 import datetime
-from torchvision.datasets import MNIST
+from torchvision.datasets import MNIST, FashionMNIST, KMNIST, FakeData, CIFAR10
 import lib.utils as utils
 import lib.layers.odefunc as odefunc
 import lib.layers as layers
 
 import code.vae_lib.models.VAE as VAE
 import code.vae_lib.models.CNFVAE as CNFVAE
+import code.vae_lib.models.fashionmnistmodel as FCNFVAE
 from code.vae_lib.models.train import AverageMeter, save_checkpoint
 from code.vae_lib.optimization.training import train, evaluate
 from code.vae_lib.utils.load_data import load_dataset
@@ -86,7 +90,7 @@ parser.add_argument(
 )
 parser.add_argument('-r', '--rank', type=int, default=1)
 parser.add_argument(
-    '-nf', '--num_flows', type=int, default=4, metavar='NUM_FLOWS',
+    '-nf', '--num_flows', type=int, default=8, metavar='NUM_FLOWS',
     help='Number of flow layers, ignored in absence of flows'
 )
 parser.add_argument(
@@ -119,7 +123,7 @@ parser.add_argument('--train_T', type=eval, default=False)
 parser.add_argument("--divergence_fn", type=str, default="approximate", choices=["brute_force", "approximate"])
 parser.add_argument("--nonlinearity", type=str, default="softplus", choices=odefunc.NONLINEARITIES)
 
-parser.add_argument('--solver', type=str, default='midpoint', choices=SOLVERS)
+parser.add_argument('--solver', type=str, default='euler', choices=SOLVERS)
 parser.add_argument('--atol', type=float, default=1e-5)
 parser.add_argument('--rtol', type=float, default=1e-5)
 parser.add_argument("--step_size", type=float, default=None, help="Optional fixed step size.")
@@ -136,18 +140,17 @@ parser.add_argument('--bn_lag', type=float, default=0)
 parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False])
 parser.add_argument('--model_path', type=str, default='')
 parser.add_argument('--retrain_encoder', type=eval, default=False, choices=[True, False])
-parser.add_argument('--annealing-epochs', type=int, default=1, metavar='N',
+parser.add_argument('--annealing-epochs', type=int, default=15, metavar='N',
                         help='number of epochs to anneal KL for [default: 200]')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-if args.manual_seed is None:
-    args.manual_seed = random.randint(1, 100000)
-random.seed(args.manual_seed)
-torch.manual_seed(args.manual_seed)
-torch.manual_seed(0)
-np.random.seed(args.manual_seed)
+seed = 12
+args.manual_seed = seed
+random.seed(seed)
+torch.manual_seed(seed)
+np.random.seed(seed)
 
 if args.cuda:
     # gpu device number
@@ -212,16 +215,19 @@ def run(args, kwargs):
     #train_loader, val_loader, test_loader, args = load_dataset(args, **kwargs)
     args.dynamic_binarization = False
     args.input_type = 'binary'
-
+    transform = transforms.Compose(
+        [transforms.Grayscale(1),
+        transforms.Resize((28, 28), interpolation=2),
+        transforms.ToTensor()
+         #transforms.Normalize((0.5,), (0.5,))
+         ])
     args.input_size = [1, 28, 28]
     train_loader = torch.utils.data.DataLoader(
-        MNIST('./data', train=True, download=True, transform=transforms.ToTensor()),
-        batch_size=args.batch_size, shuffle=True)
+        FashionMNIST('./data', train=True, download=True, transform=transforms.ToTensor()),batch_size=args.batch_size, shuffle=True)
     N_mini_batches = len(train_loader)
     test_loader = torch.utils.data.DataLoader(
-        MNIST('./data', train=False, download=True, transform=transforms.ToTensor()),
+        FashionMNIST('./data', train=False, download=True, transform=transforms.ToTensor()),
         batch_size=args.batch_size, shuffle=False)
-
 
     if not args.evaluate:
 
@@ -292,6 +298,7 @@ def run(args, kwargs):
             train_loss_meter = AverageMeter()
             # NOTE: is_paired is 1 if the example is paired
             for batch_idx, (image, text) in enumerate(train_loader):
+
                 if epoch < args.annealing_epochs:
                     # compute the KL annealing factor for the current mini-batch in the current epoch
                     annealing_factor = (float(batch_idx + (epoch - 1) * N_mini_batches + 1) /
@@ -311,7 +318,6 @@ def run(args, kwargs):
 
                 # refresh the optimizer
                 optimizer.zero_grad()
-
                 # pass data through model
                 recon_image_1, recon_text_1, mu_1, logvar_1, logj1, z01, zk1 = model(image, text)
                 recon_image_2, recon_text_2, mu_2, logvar_2, logj2, z02, zk2 = model(image)
@@ -324,7 +330,7 @@ def run(args, kwargs):
                                                       args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
                 text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,
                                                      args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
-                #print("TEXT SHAPE", text_loss.shape, "TEXTLOSS",text_loss, image_loss.shape, image_loss)
+                #print("TEXT", r, "TEXTLOSS",text_loss, image_loss.shape, image_loss)
                 train_loss = joint_loss + image_loss + text_loss # joint_loss# ovie se tie 3 losses, za sekoja kombinacija poedinecno ama aj so 2 ke testiram
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
@@ -360,6 +366,7 @@ def run(args, kwargs):
                 joint_loss, rec1, rec2, kl = elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1, z01, zk1, logj1,args)
                 image_loss, rec1, rec2, kl = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, z02, zk2, logj2, args)
                 text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,args)
+
                 test_loss = joint_loss + image_loss + text_loss
 
                 test_loss_meter.update(test_loss.item(), batch_size)
