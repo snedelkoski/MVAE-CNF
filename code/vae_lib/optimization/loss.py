@@ -314,6 +314,35 @@ def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj,
     return ELBO, image_bce, text_bce, kl
 
 
+def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, lambda_weights=None, annealing_factor=1.0, beta=1.):
+    """Multimodal ELBO loss function.
+    """
+    if lambda_weights is None:
+        lambda_weights = torch.ones((len(inputs), 1))
+    # ln p(z_k)  (not averaged)
+    log_p_zk = log_normal_standard(z_k, dim=1)
+    # ln q(z_0)  (not averaged)
+    log_q_z0 = log_normal_diag(z_0, mean=z_mu, log_var=z_var, dim=1)
+    # N E_q0[ ln q(z_0) - ln p(z_k) ]
+    #summed_logs = torch.sum(log_q_z0 - log_p_zk)
+    logs = log_q_z0 - log_p_zk
+    # sum over batches
+    #summed_ldj = torch.sum(ldj)
+
+    # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
+    kl = logs.sub(ldj).to(torch.double)
+
+    bces = torch.zeros((len(inputs), 1))  # default params
+    for i in range(len(inputs)):
+        bces[i] = torch.sum(loss_funcs[i](recons[i], inputs[i]))
+
+    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+    # https://arxiv.org/abs/1312.6114
+    ELBO = torch.mean(torch.sum(lambda_weights * bces) + annealing_factor * kl)
+
+    return ELBO, bces, kl
+
+
 def binary_cross_entropy_with_logits(input, target):
     """Sigmoid Activation + Binary Cross Entropy
 
