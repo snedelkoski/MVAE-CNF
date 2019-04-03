@@ -15,7 +15,7 @@ from torchvision.utils import save_image
 from code.vae_lib.models.train import load_checkpoint
 from code.vae_lib.models.train_misc import override_divergence_fn
 
-
+torch.manual_seed(20)
 def fetch_mnist_image(label):
     """Return a random image from the MNIST dataset with label.
 
@@ -24,7 +24,7 @@ def fetch_mnist_image(label):
     @return: torch.autograd.Variable
              MNIST image
     """
-    mnist_dataset = datasets.MNIST('./data', train=False, download=True, 
+    mnist_dataset = datasets.FashionMNIST('./data', train=False, download=True,
                                    transform=transforms.ToTensor())
     images = mnist_dataset.test_data.numpy()
     labels = mnist_dataset.test_labels.numpy()
@@ -55,10 +55,10 @@ if __name__ == "__main__":
     parser.add_argument('--n-samples', type=int, default=64, 
                         help='Number of images and texts to sample [default: 64]')
     # condition sampling on a particular images
-    parser.add_argument('--condition-on-image', type=int, default=None,
+    parser.add_argument('--condition-on-image', type=int, default=False,
                         help='If True, generate text conditioned on an image.')
     # condition sampling on a particular text
-    parser.add_argument('--condition-on-text', type=int, default=None, 
+    parser.add_argument('--condition-on-text', type=int, default=3,
                         help='If True, generate images conditioned on a text.')
     parser.add_argument('--cuda', action='store_true', default=True,
                         help='enables CUDA training')
@@ -87,6 +87,7 @@ if __name__ == "__main__":
     # mode 3: generate conditioned on text
     elif args.condition_on_text and not args.condition_on_image:
         text       = fetch_mnist_text(args.condition_on_text)
+        print(text)
         if args.cuda:
             text   = text.cuda()
         mu, logvar = model.infer(text=text)
@@ -110,9 +111,11 @@ if __name__ == "__main__":
     std        = std.expand_as(sample)
     sample     = sample.mul(std).add_(mu)
     # generate image and text
-    override_divergence_fn(model, "brute_force")
-    img_recon  = F.sigmoid(model.image_decoder(model.cnf(sample))).cpu().data
-    txt_recon  = F.log_softmax(model.text_decoder(model.cnf(sample)), dim=1).cpu().data
+    #override_divergence_fn(model, "brute_force")
+    zk, delta_logp = model.cnf(sample.cuda(), zero.cuda())
+    print(zk.shape)
+    img_recon  = F.sigmoid(model.image_decoder(zk.cuda())).cpu().data
+    txt_recon  = F.log_softmax(model.text_decoder(zk.cuda()), dim=1).cpu().data
     
     # save image samples to filesystem
     save_image(img_recon.view(args.n_samples, 1, 28, 28),

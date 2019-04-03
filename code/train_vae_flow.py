@@ -90,7 +90,7 @@ parser.add_argument(
 )
 parser.add_argument('-r', '--rank', type=int, default=1)
 parser.add_argument(
-    '-nf', '--num_flows', type=int, default=8, metavar='NUM_FLOWS',
+    '-nf', '--num_flows', type=int, default=4, metavar='NUM_FLOWS',
     help='Number of flow layers, ignored in absence of flows'
 )
 parser.add_argument(
@@ -113,7 +113,7 @@ parser.add_argument('--gpu_num', type=int, default=0, metavar='GPU', help='choos
 
 # CNF settings
 parser.add_argument(
-    "--layer_type", type=str, default="concat",
+    "--layer_type", type=str, default="blend",
     choices=["ignore", "concat", "concat_v2", "squash", "concatsquash", "concatcoord", "hyper", "blend"]
 )
 parser.add_argument('--dims', type=str, default='512-512')
@@ -140,13 +140,13 @@ parser.add_argument('--bn_lag', type=float, default=0)
 parser.add_argument('--evaluate', type=eval, default=False, choices=[True, False])
 parser.add_argument('--model_path', type=str, default='')
 parser.add_argument('--retrain_encoder', type=eval, default=False, choices=[True, False])
-parser.add_argument('--annealing-epochs', type=int, default=15, metavar='N',
+parser.add_argument('--annealing-epochs', type=int, default=40, metavar='N',
                         help='number of epochs to anneal KL for [default: 200]')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
-seed = 12
+seed = 20
 args.manual_seed = seed
 random.seed(seed)
 torch.manual_seed(seed)
@@ -287,7 +287,7 @@ def run(args, kwargs):
             parameters = model.parameters()
 
         #optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
-        optimizer = optim.Adam(parameters, args.learning_rate)
+        optimizer = optim.Adamax(parameters, args.learning_rate, eps=1.e-7)
         # ==================================================================================================================
         # TRAINING AND EVALUATION
         # ==================================================================================================================
@@ -348,6 +348,8 @@ def run(args, kwargs):
 
             model.eval()
             beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
+            image_loss_meter = AverageMeter()
+            text_loss_meter = AverageMeter()
             test_loss_meter = AverageMeter()
             override_divergence_fn(model, "brute_force")
             for batch_idx, (image, text) in enumerate(test_loader):
@@ -364,13 +366,20 @@ def run(args, kwargs):
 
                 # compute ELBO for each data combo
                 joint_loss, rec1, rec2, kl = elbo_loss(recon_image_1, image, recon_text_1, text, mu_1, logvar_1, z01, zk1, logj1,args)
+                image_loss_meter.update(rec1.mean().item(), batch_size)
+                text_loss_meter.update(rec2.mean().item(), batch_size)
                 image_loss, rec1, rec2, kl = elbo_loss(recon_image_2, image, None, None, mu_2, logvar_2, z02, zk2, logj2, args)
+                image_loss_meter.update(rec1.mean().item(), batch_size)
+
                 text_loss, rec1, rec2, kl = elbo_loss(None, None, recon_text_3, text, mu_3, logvar_3, z03, zk3, logj3,args)
+                text_loss_meter.update(rec2.mean().item(), batch_size)
 
                 test_loss = joint_loss + image_loss + text_loss
-
                 test_loss_meter.update(test_loss.item(), batch_size)
 
+
+            print('====> Test image loss: {:.4f}'.format(image_loss_meter.avg))
+            print('====> Test text loss: {:.4f}'.format(text_loss_meter.avg))
             print('====> Test Loss: {:.4f}'.format(test_loss_meter.avg))
             return test_loss_meter.avg
 

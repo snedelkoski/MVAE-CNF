@@ -155,6 +155,7 @@ class TextEncoder(nn.Module):
         self.fc32  = nn.Linear(512, n_latents)
         self.swish = Swish()
 
+
     def forward(self, x):
         h = self.swish(self.fc1(x.to(torch.int64)))
         h = self.swish(self.fc2(h))

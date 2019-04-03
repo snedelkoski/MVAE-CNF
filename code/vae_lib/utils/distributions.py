@@ -14,16 +14,21 @@ if torch.cuda.is_available():
 # N(x | mu, var) = 1/sqrt{2pi var} exp[-1/(2 var) (x-mean)(x-mean)]
 # log N(x| mu, var) = -log sqrt(2pi) -0.5 log var - 0.5 (x-mean)(x-mean)/var ??? why 0.5 log var ???
 
+# def log_normal_diag(x, mean, log_var, average=False, reduce=True, dim=None):
+#     log_norm = -0.5 * ((x - mean) * (x - mean) * log_var.exp().reciprocal())
+#     if reduce:
+#         if average:
+#             return torch.mean(log_norm, dim)
+#         else:
+#             return torch.sum(log_norm, dim)
+#     else:
+#         return log_norm
 def log_normal_diag(x, mean, log_var, average=False, reduce=True, dim=None):
-    log_norm = -0.5 * ((x - mean) * (x - mean) * log_var.exp().reciprocal())
-    if reduce:
-        if average:
-            return torch.mean(log_norm, dim)
-        else:
-            return torch.sum(log_norm, dim)
+    log_normal = -0.5 * ( log_var + torch.pow( x - mean, 2 ) * torch.pow( torch.exp( log_var ), -1) )
+    if average:
+        return torch.mean( log_normal, dim )
     else:
-        return log_norm
-
+        return torch.sum( log_normal, dim )
 
 def log_normal_normalized(x, mean, log_var, average=False, reduce=True, dim=None):
     log_norm = -(x - mean) * (x - mean)
@@ -42,7 +47,6 @@ def log_normal_normalized(x, mean, log_var, average=False, reduce=True, dim=None
 
 def log_normal_standard(x, average=False, reduce=True, dim=None):
     log_norm = -0.5 * x * x
-
     if reduce:
         if average:
             return torch.mean(log_norm, dim)

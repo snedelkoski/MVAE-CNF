@@ -95,3 +95,4 @@ class IAFVAE(VAE):
         x_mean = self.decode(z_k)
 
         return x_mean, z_mu, z_var, self.log_det_j, z_0, z_k
+

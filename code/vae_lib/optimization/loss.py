@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 
-from code.vae_lib.utils.distributions import log_normal_diag, log_normal_standard, log_bernoulli
+from code.vae_lib.utils.distributions import log_normal_diag, log_normal_standard, log_bernoulli, log_normal_normalized
 import torch.nn.functional as F
 
 def binary_loss_function(recon_x1, x1, recon_x2, x2, z_mu, z_var, z_0, z_k, ldj, beta=1.):
@@ -280,9 +280,8 @@ def calculate_loss_array(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args):
     return loss
 
 
-
 ####################################
-def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj, args, lambda_image=1.0, lambda_text=10.0, annealing_factor=1.0, beta=1.):
+def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj, args, lambda_image=1.0, lambda_text=1.0, annealing_factor=1.0, beta=1.):
     """Bimodal ELBO loss function.
     """
     # ln p(z_k)  (not averaged)
@@ -310,7 +309,6 @@ def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj,
     # https://arxiv.org/abs/1312.6114
 
     ELBO = torch.mean(lambda_image * image_bce + lambda_text * text_bce + annealing_factor * kl)
-
     return ELBO, image_bce, text_bce, kl
 
 
