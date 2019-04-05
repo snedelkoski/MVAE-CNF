@@ -1,0 +1,3 @@
+snapshots*
+*.swp
+*__pycache__*

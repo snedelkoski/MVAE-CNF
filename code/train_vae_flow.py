@@ -326,6 +326,7 @@ def run(args, kwargs):
                                                      args, lambda_image=1.0, lambda_text=10.0, annealing_factor=annealing_factor, beta=beta)
                 #print("TEXT SHAPE", text_loss.shape, "TEXTLOSS",text_loss, image_loss.shape, image_loss)
                 train_loss = joint_loss + image_loss + text_loss # joint_loss# ovie se tie 3 losses, za sekoja kombinacija poedinecno ama aj so 2 ke testiram
+                print('train_loss shape', train_loss.shape)
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
                 train_loss.backward()

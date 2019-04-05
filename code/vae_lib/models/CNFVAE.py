@@ -46,11 +46,11 @@ class CNFVAE(VAE):
         z_mu, z_var = self.encode(image, text)
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
-        z0 = z0.to(torch.float32).cuda()
+        z0 = z0.to(z_mu)
         if image is not None:
-            zero = torch.zeros(image.shape[0], 1).to(torch.float32).cuda()
+            zero = torch.zeros(image.shape[0], 1).to(z0)
         elif text is not None:
-            zero = torch.zeros(text.shape[0], 1).to(torch.float32).cuda()
+            zero = torch.zeros(text.shape[0], 1).to(z0)
 
         zk, delta_logp = self.cnf(z0, zero)  # run model forward
         image_rec = self.image_decoder(zk)
