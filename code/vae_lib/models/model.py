@@ -74,16 +74,38 @@ class ImageEncoder(nn.Module):
     """
     def __init__(self, n_latents):
         super(ImageEncoder, self).__init__()
-        self.fc1   = nn.Linear(784, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc31  = nn.Linear(512, n_latents)
-        self.fc32  = nn.Linear(512, n_latents)
+        self.fc1 = nn.Linear(784, 512)
+        self.fc2 = nn.Linear(512, 512)
+        self.fc31 = nn.Linear(512, n_latents)
+        self.fc32 = nn.Linear(512, n_latents)
         self.swish = Swish()
 
     def forward(self, x):
         h = self.swish(self.fc1(x.view(-1, 784)))
         h = self.swish(self.fc2(h))
         return self.fc31(h), self.fc32(h)
+
+
+class ImageDiscriminator(nn.Module):
+    """Parametrizes q(z|x).
+
+    @param n_latents: integer
+                      number of latent dimensions
+    """
+    def __init__(self, n_latents, n_classes):
+        super(ImageEncoder, self).__init__()
+        self.fc1 = nn.Linear(784, 512)
+        self.fc2 = nn.Linear(512, 512)
+        self.fc_latent = nn.Linear(512, n_latents)
+        self.out = nn.Linear(n_latents, n_classes)
+        self.swish = Swish()
+        self.softmax = nn.Softmax()
+
+    def forward(self, x):
+        h = self.swish(self.fc1(x.view(-1, 784)))
+        h = self.swish(self.fc2(h))
+        h = self.swish(self.fc_latent(h))
+        return self.softmax(self.out(h)), h
 
 
 class ImageDecoder(nn.Module):
@@ -94,10 +116,10 @@ class ImageDecoder(nn.Module):
     """
     def __init__(self, n_latents):
         super(ImageDecoder, self).__init__()
-        self.fc1   = nn.Linear(n_latents, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc3   = nn.Linear(512, 512)
-        self.fc4   = nn.Linear(512, 784)
+        self.fc1 = nn.Linear(n_latents, 512)
+        self.fc2 = nn.Linear(512, 512)
+        self.fc3 = nn.Linear(512, 512)
+        self.fc4 = nn.Linear(512, 784)
         self.swish = Swish()
 
     def forward(self, z):
@@ -115,16 +137,38 @@ class TextEncoder(nn.Module):
     """
     def __init__(self, n_latents):
         super(TextEncoder, self).__init__()
-        self.fc1   = nn.Embedding(10, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc31  = nn.Linear(512, n_latents)
-        self.fc32  = nn.Linear(512, n_latents)
+        self.fc1 = nn.Embedding(10, 512)
+        self.fc2 = nn.Linear(512, 512)
+        self.fc31 = nn.Linear(512, n_latents)
+        self.fc32 = nn.Linear(512, n_latents)
         self.swish = Swish()
 
     def forward(self, x):
         h = self.swish(self.fc1(x))
         h = self.swish(self.fc2(h))
         return self.fc31(h), self.fc32(h)
+
+
+class TextDiscriminator(nn.Module):
+    """Parametrizes q(z|y).
+
+    @param n_latents: integer
+                      number of latent dimensions
+    """
+    def __init__(self, n_latents, n_classes):
+        super(TextEncoder, self).__init__()
+        self.fc1 = nn.Embedding(10, 512)
+        self.fc2 = nn.Linear(512, 512)
+        self.fc_latent = nn.Linear(512, n_latents)
+        self.out = nn.Linear(n_latents, n_classes)
+        self.swish = Swish()
+        self.softmax = nn.Softmax()
+
+    def forward(self, x):
+        h = self.swish(self.fc1(x))
+        h = self.swish(self.fc2(h))
+        h = self.swish(self.fc_latent(h))
+        return self.softmax(self.out(h)), h
 
 
 class TextDecoder(nn.Module):
@@ -135,10 +179,10 @@ class TextDecoder(nn.Module):
     """
     def __init__(self, n_latents):
         super(TextDecoder, self).__init__()
-        self.fc1   = nn.Linear(n_latents, 512)
-        self.fc2   = nn.Linear(512, 512)
-        self.fc3   = nn.Linear(512, 512)
-        self.fc4   = nn.Linear(512, 10)
+        self.fc1 = nn.Linear(n_latents, 512)
+        self.fc2 = nn.Linear(512, 512)
+        self.fc3 = nn.Linear(512, 512)
+        self.fc4 = nn.Linear(512, 10)
         self.swish = Swish()
 
     def forward(self, z):

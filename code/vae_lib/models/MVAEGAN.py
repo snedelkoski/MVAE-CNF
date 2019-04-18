@@ -20,10 +20,10 @@ def conv3x3(in_planes, out_planes, stride=1):
                      padding=1, bias=False)
 
 
-class GenMVAE(VAE):
+class MVAEGAN(VAE):
 
-    def __init__(self, args, encoders, decoders):
-        super(GenMVAE, self).__init__(args)
+    def __init__(self, args, encoders, decoders, discriminators):
+        super(MVAEGAN, self).__init__(args)
         self.experts = ProductOfExperts()
         # CNF model
         self.encoders = nn.ModuleList()
@@ -31,7 +31,10 @@ class GenMVAE(VAE):
             self.encoders.append(enc(args.z_size))
         self.decoders = nn.ModuleList()
         for dec in decoders:
-            self.decoders.append(dec(args.z_size, 2))
+            self.decoders.append(dec(args.z_size))
+        self.discriminators = nn.ModuleList()
+        for dis in discriminators:
+            self.decoders.append(dec(args.z_size))
         self.z_size = args.z_size
         if args.cuda:
             self.cuda()
@@ -51,6 +54,15 @@ class GenMVAE(VAE):
             reconstructions.append(dec(z0))
 
         return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], 1)).to(z0), z0, None
+
+    def discriminate(self, inputs):
+        preds = []
+        for inp, dis in zip(inputs, self.discriminators):
+            if inp is None:
+                continue
+            preds.append(dis(inp))
+
+        return preds
 
     def encode(self, inputs):
         """
@@ -81,6 +93,7 @@ class GenMVAE(VAE):
             logvar = torch.cat((logvar, var_z.unsqueeze(0)), dim=0)
 
         # product of experts to combine gaussians
+
         mu, logvar = self.experts(mu, logvar)
 
         return mu, logvar
@@ -96,4 +109,5 @@ class GenMVAE(VAE):
             return eps.mul(std).add_(mu)
         else:
             return mu
+
 

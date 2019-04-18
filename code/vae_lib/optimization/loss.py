@@ -353,6 +353,36 @@ def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, 
     return ELBO, bces, kl
 
 
+def vaegan_losses(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, lambda_weights=None, annealing_factor=1.0, beta=1.):
+    """Multimodal VAE-GAN ELBO loss function.
+    """
+    if lambda_weights is None:
+        lambda_weights = torch.ones((len(inputs), 1))
+    batch_size = 0
+    for inp in inputs:
+        if inp is not None:
+            batch_size = inp.shape[0]
+    if z_k is None:
+        log_p_zk = log_normal_standard(z_0, dim=1)
+    else:
+        log_p_zk = log_normal_standard(z_k, dim=1)
+    log_q_z0 = log_normal_diag(z_0, mean=z_mu, log_var=z_var, dim=1)
+    logs = log_q_z0 - log_p_zk
+    kl = logs.sub(ldj).to(torch.double)
+
+    bces = torch.zeros(batch_size, (len(inputs))).to(kl)  # default params
+    for i in range(len(inputs)):
+        if inputs[i] is not None:
+            bces[:, i] = torch.sum(loss_funcs[i](recons[i], inputs[i]), dim=1, dtype=torch.double)
+
+    lambda_weights = lambda_weights.to(bces)
+    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+    # https://arxiv.org/abs/1312.6114
+    ELBO = torch.mean(torch.sum(lambda_weights * bces, dim=1) + annealing_factor * kl)
+
+    return GAN_loss, bces, kl
+
+
 def binary_cross_entropy_with_logits(input, target):
     """Sigmoid Activation + Binary Cross Entropy
 
