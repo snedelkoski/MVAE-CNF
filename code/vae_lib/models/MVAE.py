@@ -31,7 +31,7 @@ class GenMVAE(VAE):
             self.encoders.append(enc(args.z_size))
         self.decoders = nn.ModuleList()
         for dec in decoders:
-            self.decoders.append(dec(args.z_size, 2))
+            self.decoders.append(dec(args.z_size))
         self.z_size = args.z_size
         if args.cuda:
             self.cuda()
@@ -81,6 +81,7 @@ class GenMVAE(VAE):
             logvar = torch.cat((logvar, var_z.unsqueeze(0)), dim=0)
 
         # product of experts to combine gaussians
+
         mu, logvar = self.experts(mu, logvar)
 
         return mu, logvar

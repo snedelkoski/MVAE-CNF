@@ -2,8 +2,6 @@
 # -*- coding: utf-8 -*-
 # train VAE with flows
 from __future__ import print_function
-from code.vae_lib.models.train_misc import count_nfe, override_divergence_fn
-
 
 import argparse
 import sys
@@ -249,7 +247,6 @@ def run(args, kwargs):
         # TRAINING AND EVALUATION
         # ==================================================================================================================
         def train(epoch):
-            override_divergence_fn(model, "approximate")
             beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
             model.train()
             train_loss_meter = AverageMeter()
@@ -291,10 +288,12 @@ def run(args, kwargs):
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
                         # print(sel_inputs)
                         recs, mu, logvar, logj, z0, zk = model(sel_inputs)
-                        sel_loss, recs, kl = vaegan_elbo_loss(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk, logj,
+                        aux_z0 = torch.
+                        aux_fake = model.decode()
+                        GAN_loss, recon_loss, kl = vaegan_losses(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk,
                                                               args, lambda_weights=torch.DoubleTensor([1, 10]),
                                                               annealing_factor=annealing_factor, beta=beta)
-                        train_loss += sel_loss
+                        train_D_fake = GAN_loss
 
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
