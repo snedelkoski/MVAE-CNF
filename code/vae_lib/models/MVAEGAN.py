@@ -34,7 +34,7 @@ class MVAEGAN(VAE):
             self.decoders.append(dec(args.z_size))
         self.discriminators = nn.ModuleList()
         for dis in discriminators:
-            self.decoders.append(dec(args.z_size))
+            self.discriminators.append(dis(args.z_size, 2))
         self.z_size = args.z_size
         if args.cuda:
             self.cuda()
@@ -50,22 +50,38 @@ class MVAEGAN(VAE):
         # z0 = z0.to(z_mu)
 
         reconstructions = self.decode(z0)
+        print('z0 shape', z0.shape)
 
-        return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], 1)).to(z0), z0, None
+        return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], )).to(z0), z0, None
 
     def decode(self, z0):
         reconstructions = []
         for dec in self.decoders:
-            reconstructions.append(dec(z0)) return reconstructions
+            reconstructions.append(dec(z0))
+
+        return reconstructions
 
     def discriminate(self, inputs):
         preds = []
         for inp, dis in zip(inputs, self.discriminators):
             if inp is None:
                 continue
-            preds.append(dis(inp))
+            pred, _ = dis(inp)
+            preds.append(pred)
 
         return preds
+
+    def discriminate_with_features(self, inputs):
+        preds = []
+        feats = []
+        for inp, dis in zip(inputs, self.discriminators):
+            if inp is None:
+                continue
+            pred, feat = dis(inp)
+            preds.append(pred)
+            feats.append(feat)
+
+        return preds, feats
 
     def encode(self, inputs):
         """
@@ -113,56 +129,71 @@ class MVAEGAN(VAE):
         else:
             return mu
 
-class Aux(nn.Module):
-    def __init__(self, args, encoders, decoders, discriminators):
-        super(MVAEGAN, self).__init__(args)
-        self.experts = ProductOfExperts()
-        # CNF model
-        self.encoders = nn.ModuleList()
-        for enc in encoders:
-            self.encoders.append(enc(args.z_size))
-        self.decoders = nn.ModuleList()
-        for dec in decoders:
-            self.decoders.append(dec(args.z_size))
-        self.discriminators = nn.ModuleList()
-        for dis in discriminators:
-            self.decoders.append(dec(args.z_size))
-        self.z_size = args.z_size
-        if args.cuda:
-            self.cuda()
-    def __init__(self):
-        super(Aux,self).__init__()
+    def freeze_params(self, enc_freeze, dec_freeze, dis_freeze):
+        for enc in self.encoders:
+            for p in enc.parameters():
+                p.requires_grad = enc_freeze
 
-        self.fc3 = nn.Linear(20,400)
-        self.fc4 = nn.Linear(400,784)
-        self.relu = nn.ReLU()
-        self.sigmoid = nn.Sigmoid()
+        for dec in self.decoders:
+            for p in dec.parameters():
+                p.requires_grad = dec_freeze
 
-    def decode(self,z):
-        z = z.view(-1,20)
-        h3 = self.relu(self.fc3(z))
-        return self.sigmoid(self.fc4(h3))
-    
-    def reparameterize(self, mu, logvar):
-        if self.training:
-          std = logvar.mul(0.5).exp_()
-          eps = Variable(std.data.new(std.size()).normal_())
-          return eps.mul(std).add_(mu)
-        else:
-          return mu
+        for dis in self.discriminators:
+            for p in dis.parameters():
+                p.requires_grad = dis_freeze
 
-    def dec_params(self):
-        return self.fc3,self.fc4
 
-    def return_weights(self):
-        return self.fc3.weight, self.fc4.weight
-
-    
-    def forward(self,mu,logvar,fc3_weight, fc4_weight):
-        self.fc3.weight = fc3_weight
-        self.fc4.weight = fc4_weight
-        
-        z = self.reparameterize(mu,logvar)
-        #other.fc3,other.fc4 = self.dec_params()
-        #return self.decode(z).view(-1,28,28)
-return self.decode(z)
+# class Aux(nn.Module):
+#     def __init__(self, args, encoders, decoders, discriminators):
+#         super(Aux, self).__init__()
+#         # CNF model
+#         self.decoders = nn.ModuleList()
+#         for dec in decoders:
+#             self.decoders.append(dec(args.z_size))
+#         self.z_size = args.z_size
+#         if args.cuda:
+#             self.cuda()
+#
+#     def decode(self, z0):
+#         reconstructions = []
+#         for dec in self.decoders:
+#             reconstructions.append(dec(z0))
+#
+#         return reconstructions
+#
+#     def __init__(self):
+#         super(Aux,self).__init__()
+#
+#         self.fc3 = nn.Linear(20,400)
+#         self.fc4 = nn.Linear(400,784)
+#         self.relu = nn.ReLU()
+#         self.sigmoid = nn.Sigmoid()
+#
+#     def decode(self,z):
+#         z = z.view(-1,20)
+#         h3 = self.relu(self.fc3(z))
+#         return self.sigmoid(self.fc4(h3))
+#     
+#     def reparameterize(self, mu, logvar):
+#         if self.training:
+#           std = logvar.mul(0.5).exp_()
+#           eps = Variable(std.data.new(std.size()).normal_())
+#           return eps.mul(std).add_(mu)
+#         else:
+#           return mu
+#
+#     def dec_params(self):
+#         return self.fc3,self.fc4
+#
+#     def return_weights(self):
+#         return self.fc3.weight, self.fc4.weight
+#
+#     
+#     def forward(self,mu,logvar,fc3_weight, fc4_weight):
+#         self.fc3.weight = fc3_weight
+#         self.fc4.weight = fc4_weight
+#         
+#         z = self.reparameterize(mu,logvar)
+#         #other.fc3,other.fc4 = self.dec_params()
+#         #return self.decode(z).view(-1,28,28)
+# return self.decode(z)

@@ -319,7 +319,7 @@ def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, 
     """Multimodal ELBO loss function.
     """
     if lambda_weights is None:
-        lambda_weights = torch.ones((len(inputs), 1))
+        lambda_weights = torch.ones((len(inputs), ))
     batch_size = 0
     for inp in inputs:
         if inp is not None:
@@ -353,34 +353,63 @@ def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, 
     return ELBO, bces, kl
 
 
-def vaegan_losses(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, lambda_weights=None, annealing_factor=1.0, beta=1.):
+def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
+                  loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, lambda_weights=None, annealing_factor=1.0):
     """Multimodal VAE-GAN ELBO loss function.
     """
     if lambda_weights is None:
-        lambda_weights = torch.ones((len(inputs), 1))
+        lambda_weights = torch.ones((len(inputs), ))
     batch_size = 0
     for inp in inputs:
         if inp is not None:
             batch_size = inp.shape[0]
+            break
     if z_k is None:
         log_p_zk = log_normal_standard(z_0, dim=1)
     else:
         log_p_zk = log_normal_standard(z_k, dim=1)
     log_q_z0 = log_normal_diag(z_0, mean=z_mu, log_var=z_var, dim=1)
+    # print('log z0 shape', log_q_z0.shape)
+    # print('log zk shape', log_p_zk.shape)
     logs = log_q_z0 - log_p_zk
+    # print('logs shape', logs.shape)
+    # print('ldj shape', ldj.shape)
     kl = logs.sub(ldj).to(torch.double)
+    # print('kl shape', kl.shape)
 
-    bces = torch.zeros(batch_size, (len(inputs))).to(kl)  # default params
+    mses = torch.zeros(batch_size, len(inputs)).to(kl)  # default params
+    print(mses)
     for i in range(len(inputs)):
         if inputs[i] is not None:
-            bces[:, i] = torch.sum(loss_funcs[i](recons[i], inputs[i]), dim=1, dtype=torch.double)
+            # print('recons shape', recons[i].shape)
+            # print('inputs shape', inputs[i].shape)
+            mses[:, i] = torch.mean(loss_funcs[i](recons[i], inputs[i], reduction='none'), dim=1)
 
-    lambda_weights = lambda_weights.to(bces)
+    GAN_loss = torch.zeros(batch_size, len(inputs)).to(kl)  # default params
+    true_labels = torch.ones((batch_size, ), dtype=torch.int64).to(kl.device)
+    fake_labels = torch.zeros((batch_size, ), dtype=torch.int64).to(kl.device)
+    for i in range(len(inputs)):
+        if preds_true[i] is not None:
+            # print('preds size', preds_true[i].shape)
+            # print('labels size', true_labels.shape)
+            # print('labels', true_labels.type())
+            GAN_loss[:, i] += F.nll_loss(preds_true[i], true_labels)
+        if preds_fake[i] is not None:
+            GAN_loss[:, i] = F.nll_loss(preds_fake[i], fake_labels)
+        if preds_aux[i] is not None:
+            GAN_loss[:, i] = F.nll_loss(preds_aux[i], fake_labels)
+
+    lambda_weights = lambda_weights.to(mses)
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
-    ELBO = torch.mean(torch.sum(lambda_weights * bces, dim=1) + annealing_factor * kl)
+    # print('gan loss size', GAN_loss.shape)
+    # print('MSEs size', mses.shape)
+    # print('lambda_weghts size', lambda_weights.shape)
+    # print('KLD size', kl.shape)
 
-    return GAN_loss, bces, kl
+    return torch.mean(torch.sum(GAN_loss, dim=1)),\
+        torch.mean(torch.sum(lambda_weights * mses, dim=1)),\
+        torch.mean(annealing_factor * kl)
 
 
 def binary_cross_entropy_with_logits(input, target):

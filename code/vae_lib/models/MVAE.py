@@ -49,8 +49,9 @@ class GenMVAE(VAE):
 
         for dec in self.decoders:
             reconstructions.append(dec(z0))
+        print('z0 shape', z0.shape)
 
-        return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], 1)).to(z0), z0, None
+        return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], )).to(z0), z0, None
 
     def encode(self, inputs):
         """

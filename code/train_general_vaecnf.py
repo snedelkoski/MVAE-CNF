@@ -340,6 +340,7 @@ def run(args, kwargs):
                 for sel in binary_selections:
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
                         recs, mu, logvar, logj, z0, zk = model(sel_inputs)
+                        print('logj shape', logj.shape)
                         sel_loss, recs, kl = gen_elbo_loss(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk, logj,
                                                            args, lambda_weights=torch.DoubleTensor([1, 10]))
                         test_loss += sel_loss
