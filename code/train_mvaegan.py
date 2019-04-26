@@ -76,7 +76,7 @@ parser.add_argument(
 parser.add_argument(
     '-bs', '--batch_size', type=int, default=2048, metavar='BATCH_SIZE', help='input batch size for training'
 )
-parser.add_argument('-lr', '--learning_rate', type=float, default=1e-3, metavar='LEARNING_RATE', help='learning rate')
+parser.add_argument('-lr', '--learning_rate', type=float, default=1e-5, metavar='LEARNING_RATE', help='learning rate')
 
 parser.add_argument(
     '-w', '--warmup', type=int, default=10, metavar='N',
@@ -293,9 +293,9 @@ def run(args, kwargs):
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
-                        # print(sel_inputs)
+
                         recs, mu, logvar, logj, z0, zk = model(sel_inputs)
-                        print('logj shape', logj.shape)
+
                         z_aux = torch.randn(z0.shape).to(z0)
                         recs_aux = model.decode(z_aux)
 
@@ -329,13 +329,13 @@ def run(args, kwargs):
                 optimizer.step()
 
                 if batch_idx % args.log_interval == 0:
-                    print('Train Epoch: {} [{}/{} ({:.0f}%)]\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
-                          '\tDiscriminator Loss: {:.3f}\tAnnealing-Factor: {:.3f}'.format(
+                    print(('Train Epoch: {} [{}/{} ({:.0f}%)]\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
+                          '\tDiscriminator Loss: {:.3f}\tAnnealing-Factor: {:.3f}').format(
                               epoch, batch_idx * len(image), len(train_loader.dataset),
                               100. * batch_idx / len(train_loader), enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg, annealing_factor))
 
-            print('====> Epoch: {}\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
-                  '\tDiscriminator Loss: {:.3f}'.format(epoch, enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg))
+            print(('====> Epoch: {}\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
+                  '\tDiscriminator Loss: {:.3f}').format(epoch, enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg))
 
         def test(epoch):
 
@@ -368,8 +368,9 @@ def run(args, kwargs):
                 if args.cuda:
                     image = image.cuda()
                     text_repr = text_repr.cuda()
-                image = Variable(image, volatile=True)
-                text_repr = Variable(text_repr, volatile=True)
+
+                # image = Variable(image, volatile=True)
+                # text_repr = Variable(text_repr, volatile=True)
                 batch_size = len(image)
 
                 enc_loss = 0
@@ -379,17 +380,18 @@ def run(args, kwargs):
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                     sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
-                    # print(sel_inputs)
                     recs, mu, logvar, logj, z0, zk = model(sel_inputs)
-                    z_aux = torch.randn(z0.shape)
+
+                    z_aux = torch.randn(z0.shape).to(z0)
+
                     recs_aux = model.decode(z_aux)
 
                     preds_true, feats_true = model.discriminate_with_features(sel_inputs)
                     preds_fake, feats_fake = model.discriminate_with_features(recs)
                     preds_aux = model.discriminate(recs_aux)
 
-                    GAN_loss, recon_loss, kl = vaegan_losses(feats_fake, feats_true, preds_true, preds_fake,
-                                                             preds_aux, loss_funcs, mu, logvar, z0, zk, args)
+                    GAN_loss, recon_loss, kl = vaegan_losses(feats_fake, feats_true, preds_true, preds_fake, preds_aux,
+                                                             loss_funcs, mu, logvar, z0, zk, logj, args)
                     enc_loss += kl + recon_loss
 
                     dec_loss += recon_loss - GAN_loss
@@ -400,8 +402,8 @@ def run(args, kwargs):
                 dec_loss_meter.update(dec_loss.item(), batch_size)
                 dis_loss_meter.update(dis_loss.item(), batch_size)
 
-            print('====> Encoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
-                  '\tDiscriminator Loss: {:.3f}'.format(enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg))
+            print(('====> Encoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
+                  '\tDiscriminator Loss: {:.3f}').format(enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg))
             return enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg
 
         best_loss = sys.maxsize
@@ -415,6 +417,9 @@ def run(args, kwargs):
             save_checkpoint({
                 'state_dict': model.state_dict(),
                 'args': args,
+                'encoders': encoders,
+                'decoders': decoders,
+                'discriminators': discriminators,
                 'best_loss': best_loss,
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),

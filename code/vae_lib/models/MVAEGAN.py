@@ -50,7 +50,6 @@ class MVAEGAN(VAE):
         # z0 = z0.to(z_mu)
 
         reconstructions = self.decode(z0)
-        print('z0 shape', z0.shape)
 
         return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], )).to(z0), z0, None
 
@@ -93,7 +92,6 @@ class MVAEGAN(VAE):
         return mean_z, var_z
 
     def infer(self, inputs):
-
         batch_size = 1
         for inp in inputs:
             if inp is not None:
@@ -112,7 +110,6 @@ class MVAEGAN(VAE):
             logvar = torch.cat((logvar, var_z.unsqueeze(0)), dim=0)
 
         # product of experts to combine gaussians
-
         mu, logvar = self.experts(mu, logvar)
 
         return mu, logvar

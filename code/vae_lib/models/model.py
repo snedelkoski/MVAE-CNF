@@ -185,7 +185,6 @@ class TextDiscriminator(nn.Module):
         self.logsoftmax = nn.LogSoftmax()
 
     def forward(self, x):
-        print(x.shape)
         emb = self.fc1(x)
         h = self.swish(emb)
         h = self.swish(self.fc2(h))

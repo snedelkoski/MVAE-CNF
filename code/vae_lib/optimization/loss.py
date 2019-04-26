@@ -378,26 +378,29 @@ def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
     # print('kl shape', kl.shape)
 
     mses = torch.zeros(batch_size, len(inputs)).to(kl)  # default params
-    print(mses)
+    # print(mses)
     for i in range(len(inputs)):
         if inputs[i] is not None:
             # print('recons shape', recons[i].shape)
             # print('inputs shape', inputs[i].shape)
-            mses[:, i] = torch.mean(loss_funcs[i](recons[i], inputs[i], reduction='none'), dim=1)
+            # print('recons type', recons[i].type())
+            # print('inputs type', inputs[i].type())
+            # print('mses type', mses.type())
+            mses[:, i] = torch.mean(loss_funcs[i](recons[i], inputs[i], reduction='none'), dim=1).to(mses)
 
     GAN_loss = torch.zeros(batch_size, len(inputs)).to(kl)  # default params
     true_labels = torch.ones((batch_size, ), dtype=torch.int64).to(kl.device)
     fake_labels = torch.zeros((batch_size, ), dtype=torch.int64).to(kl.device)
     for i in range(len(inputs)):
+        # print('preds size', preds_true[i].shape)
+        # print('labels size', true_labels.shape)
+        # print('labels', true_labels.type())
         if preds_true[i] is not None:
-            # print('preds size', preds_true[i].shape)
-            # print('labels size', true_labels.shape)
-            # print('labels', true_labels.type())
-            GAN_loss[:, i] += F.nll_loss(preds_true[i], true_labels)
+            GAN_loss[:, i] += F.nll_loss(preds_true[i], true_labels).to(GAN_loss)
         if preds_fake[i] is not None:
-            GAN_loss[:, i] = F.nll_loss(preds_fake[i], fake_labels)
+            GAN_loss[:, i] += F.nll_loss(preds_fake[i], fake_labels).to(GAN_loss)
         if preds_aux[i] is not None:
-            GAN_loss[:, i] = F.nll_loss(preds_aux[i], fake_labels)
+            GAN_loss[:, i] += F.nll_loss(preds_aux[i], fake_labels).to(GAN_loss)
 
     lambda_weights = lambda_weights.to(mses)
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014

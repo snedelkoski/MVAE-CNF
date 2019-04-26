@@ -22,6 +22,7 @@ import code.lib.layers.odefunc as odefunc
 
 import code.vae_lib.models.VAE as VAE
 import code.vae_lib.models.CNFVAE as CNFVAE
+import code.vae_lib.models.MVAEGAN as MVAEGAN 
 from code.vae_lib.optimization.training import train, evaluate
 from code.vae_lib.utils.load_data import load_dataset
 from code.vae_lib.utils.plotting import plot_training_curve
@@ -137,7 +138,8 @@ def load_checkpoint(file_path, use_cuda=False):
     checkpoint = torch.load(file_path) if use_cuda else \
         torch.load(file_path, map_location=lambda storage, location: storage)
 
-    model = CNFVAE.CNFVAE(checkpoint['args'])
+    # model = CNFVAE.CNFVAE(checkpoint['args'])
+    model = MVAEGAN.MVAEGAN(checkpoint['args'], checkpoint['encoders'], checkpoint['decoders'], checkpoint['discriminators'])
     model.load_state_dict(checkpoint['state_dict'])
     return model
 
