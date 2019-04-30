@@ -205,12 +205,12 @@ def run(args, kwargs):
         # flow parameters and architecture choice are passed on to model through args
         encoders = [ImageEncoder, TextReprEncoder]
         decoders = [ImageDecoder, TextDecoder]
-        embeddings = [nn.Linear(10, 512)]
+        embeddings = [nn.Linear(10, 512), nn.Linear(784, 512)]
 
         loss_funcs = [F.mse_loss, F.mse_loss]
 
         # model = GenMVAE(args, encoders, decoders)
-        model = MCVAEGAN(args, encoders, decoders, discriminators)
+        model = MCVAEGAN(args, encoders, decoders, embeddings)
 
         # if args.retrain_encoder:
         #     logger.info(f"Initializing decoder from {args.model_path}")
