@@ -259,12 +259,12 @@ class MultimodalDiscriminator(nn.Module):
     @param n_latents: integer
                       number of latent dimensions
     """
-    def __init__(self, embedders, n_latents, n_classes):
-        super(ImageDiscriminator, self).__init__()
+    def __init__(self, n_latents, n_classes, embedders):
+        super(MultimodalDiscriminator, self).__init__()
         self.embedders = nn.ModuleList()
         for emb in embedders:
             self.embedders.append(emb)
-        self.fc1 = nn.Linear(512, 512)
+        self.fc1 = nn.Linear(1024, 512)
         self.fc_latent = nn.Linear(512, n_latents)
         self.out = nn.Linear(n_latents, n_classes)
         self.swish = Swish()
@@ -275,8 +275,10 @@ class MultimodalDiscriminator(nn.Module):
         for inp in inputs:
             if inp is not None:
                 batch_size = inp.size(0)
+                e = torch.zeros(batch_size, 1024)
+                e = e.to(inp.device)
+                break
 
-        e = torch.zeros(batch_size, 512)
         for inp, emb in zip(inputs, self.embedders):
             if inp is None:
                 continue
@@ -286,3 +288,12 @@ class MultimodalDiscriminator(nn.Module):
         h_latent = self.swish(self.fc_latent(h))
         out = self.logsoftmax(self.out(h_latent))
         return out, h_latent
+
+
+class View(nn.Module):
+    def __init__(self, shape):
+        super(View, self).__init__()
+        self.shape = shape
+
+    def forward(self, x):
+        return x.view(*self.shape)

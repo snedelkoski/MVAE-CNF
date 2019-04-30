@@ -417,6 +417,50 @@ def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
         torch.mean(annealing_factor * kl)
 
 
+def mcvaegan_losses(recon, input, pred_true, pred_fake, pred_aux,
+                    loss_func, z_mu, z_var, z_0, z_k, ldj, args,
+                    annealing_factor=1.0):
+    """Multimodal VAE-GAN ELBO loss function.
+    """
+    batch_size = input.shape[0]
+    if z_k is None:
+        log_p_zk = log_normal_standard(z_0, dim=1)
+    else:
+        log_p_zk = log_normal_standard(z_k, dim=1)
+    log_q_z0 = log_normal_diag(z_0, mean=z_mu, log_var=z_var, dim=1)
+    # print('log z0 shape', log_q_z0.shape)
+    # print('log zk shape', log_p_zk.shape)
+    logs = log_q_z0 - log_p_zk
+    # print('logs shape', logs.shape)
+    # print('ldj shape', ldj.shape)
+    kl = logs.sub(ldj).to(torch.double)
+    # print('kl shape', kl.shape)
+
+    mses = torch.zeros(batch_size, ).to(kl)  # default params
+    # print(mses)
+    mses[:] = torch.mean(loss_func(recon, input, reduction='none'), dim=1).to(mses)
+
+    GAN_loss = torch.zeros(batch_size, ).to(kl)  # default params
+    true_labels = torch.ones((batch_size, ), dtype=torch.int64).to(kl.device)
+    fake_labels = torch.zeros((batch_size, ), dtype=torch.int64).to(kl.device)
+    GAN_loss[:] += F.nll_loss(pred_true, true_labels).to(GAN_loss)
+    GAN_loss[:] += F.nll_loss(pred_fake, fake_labels).to(GAN_loss)
+    GAN_loss[:] += F.nll_loss(pred_aux, fake_labels).to(GAN_loss)
+
+    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+    # https://arxiv.org/abs/1312.6114
+    # print('gan loss size', GAN_loss.shape)
+    # print('MSEs size', mses.shape)
+    # print('lambda_weghts size', lambda_weights.shape)
+    # print('KLD size', kl.shape)
+    # print('lambda_weights', lambda_weights)
+    # print('mses lambda weights', torch.sum(lambda_weights * mses, dim=0))
+
+    return torch.mean(GAN_loss),\
+        torch.mean(mses),\
+        torch.mean(annealing_factor * kl)
+
+
 def binary_cross_entropy_with_logits(input, target):
     """Sigmoid Activation + Binary Cross Entropy
 

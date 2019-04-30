@@ -12,10 +12,10 @@ import torch.nn.functional as F
 import torch.nn as nn
 import numpy as np
 import random
-from code.vae_lib.optimization.loss import vaegan_losses, cross_entropy, binary_cross_entropy_with_logits
+from code.vae_lib.optimization.loss import mcvaegan_losses, cross_entropy, binary_cross_entropy_with_logits
 import os
 
-from code.vae_lib.models.model import TextReprEncoder, TextDiscriminator, TextDecoder, ImageEncoder, ImageDiscriminator, ImageDecoder
+from code.vae_lib.models.model import TextReprEncoder, TextDiscriminator, TextDecoder, ImageEncoder, ImageDiscriminator, ImageDecoder, View
 
 from torch.autograd import Variable
 from torchvision import transforms
@@ -205,9 +205,8 @@ def run(args, kwargs):
         # flow parameters and architecture choice are passed on to model through args
         encoders = [ImageEncoder, TextReprEncoder]
         decoders = [ImageDecoder, TextDecoder]
-        embeddings = [nn.Linear(10, 512), nn.Linear(784, 512)]
-
-        loss_funcs = [F.mse_loss, F.mse_loss]
+        embeddings = [nn.Sequential(View((-1, 784)), nn.Linear(784, 1024)), nn.Linear(10, 1024), ]
+        loss_func = F.mse_loss
 
         # model = GenMVAE(args, encoders, decoders)
         model = MCVAEGAN(args, encoders, decoders, embeddings)
@@ -300,12 +299,12 @@ def run(args, kwargs):
                     z_aux = torch.randn(z0.shape).to(z0)
                     recs_aux = model.decode(z_aux)
 
-                    preds_true, feats_true = model.discriminate_with_features(sel_inputs)
-                    preds_fake, feats_fake = model.discriminate_with_features(recs)
-                    preds_aux = model.discriminate(recs_aux)
+                    pred_true, feats_true = model.discriminate_with_features(sel_inputs)
+                    pred_fake, feats_fake = model.discriminate_with_features(recs)
+                    pred_aux = model.discriminate(recs_aux)
 
-                    GAN_loss, recon_loss, kl = vaegan_losses(feats_fake, feats_true, preds_true, preds_fake,
-                                                             preds_aux, loss_funcs, mu, logvar, z0, zk, logj,
+                    GAN_loss, recon_loss, kl = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake,
+                                                             pred_aux, loss_func, mu, logvar, z0, zk, logj,
                                                              args, annealing_factor=annealing_factor)
                     enc_loss += kl + recon_loss
 
@@ -405,12 +404,12 @@ def run(args, kwargs):
 
                     recs_aux = model.decode(z_aux)
 
-                    preds_true, feats_true = model.discriminate_with_features(sel_inputs)
-                    preds_fake, feats_fake = model.discriminate_with_features(recs)
-                    preds_aux = model.discriminate(recs_aux)
+                    pred_true, feats_true = model.discriminate_with_features(sel_inputs)
+                    pred_fake, feats_fake = model.discriminate_with_features(recs)
+                    pred_aux = model.discriminate(recs_aux)
 
-                    GAN_loss, recon_loss, kl = vaegan_losses(feats_fake, feats_true, preds_true, preds_fake, preds_aux,
-                                                             loss_funcs, mu, logvar, z0, zk, logj, args)
+                    GAN_loss, recon_loss, kl = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake, pred_aux,
+                                                               loss_func, mu, logvar, z0, zk, logj, args)
                     enc_loss += kl + recon_loss
 
                     dec_loss += recon_loss - GAN_loss
@@ -438,7 +437,7 @@ def run(args, kwargs):
                 'args': args,
                 'encoders': encoders,
                 'decoders': decoders,
-                'discriminators': discriminators,
+                'embeddings': embeddings,
                 'best_loss': best_loss,
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
