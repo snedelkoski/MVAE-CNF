@@ -409,6 +409,8 @@ def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
     # print('MSEs size', mses.shape)
     # print('lambda_weghts size', lambda_weights.shape)
     # print('KLD size', kl.shape)
+    # print('lambda_weights', lambda_weights)
+    # print('mses lambda weights', torch.sum(lambda_weights * mses, dim=0))
 
     return torch.mean(torch.sum(GAN_loss, dim=1)),\
         torch.mean(torch.sum(lambda_weights * mses, dim=1)),\

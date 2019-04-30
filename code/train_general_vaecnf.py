@@ -299,6 +299,20 @@ def run(args, kwargs):
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
                 train_loss.backward()
+                print('encoders grad:\n')
+                for enc in model.encoders:
+                    for name, p in enc.named_parameters():
+                        print(name, p.grad)
+                        # break
+                    break
+
+                # model.freeze_params(False, True, False)
+                print('decoders grad:\n')
+                for dec in model.decoders:
+                    for name, p in dec.named_parameters():
+                        print(name, p.grad)
+                        # break
+                    break
                 optimizer.step()
 
                 if batch_idx % args.log_interval == 0:

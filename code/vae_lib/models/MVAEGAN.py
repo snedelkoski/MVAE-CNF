@@ -3,7 +3,8 @@ import torch.nn as nn
 from torch.autograd import Variable
 from code.vae_lib.models.train_misc import build_model_tabular
 from .VAE import VAE
-from code.vae_lib.models.model import ProductOfExperts, prior_expert
+from code.vae_lib.models.model import ProductOfExperts, prior_expert, MultimodalDiscriminator
+
 
 
 def get_hidden_dims(args):
@@ -64,9 +65,10 @@ class MVAEGAN(VAE):
         preds = []
         for inp, dis in zip(inputs, self.discriminators):
             if inp is None:
-                continue
-            pred, _ = dis(inp)
-            preds.append(pred)
+                preds.append(None)
+            else:
+                pred, _ = dis(inp)
+                preds.append(pred)
 
         return preds
 
@@ -75,10 +77,12 @@ class MVAEGAN(VAE):
         feats = []
         for inp, dis in zip(inputs, self.discriminators):
             if inp is None:
-                continue
-            pred, feat = dis(inp)
-            preds.append(pred)
-            feats.append(feat)
+                preds.append(None)
+                feats.append(None)
+            else:
+                pred, feat = dis(inp)
+                preds.append(pred)
+                feats.append(feat)
 
         return preds, feats
 
@@ -138,6 +142,38 @@ class MVAEGAN(VAE):
         for dis in self.discriminators:
             for p in dis.parameters():
                 p.requires_grad = dis_freeze
+
+
+class MCVAEGAN(MVAEGAN):
+
+    def __init__(self, args, encoders, decoders, embeddings):
+        super(MCVAEGAN, self).__init__(args, encoders, decoders, [])
+        self.discriminator = MultimodalDiscriminator(args.z_size, 2, embeddings)
+        self.z_size = args.z_size
+        if args.cuda:
+            self.cuda()
+
+    def discriminate(self, inputs):
+        preds, _ = self.discriminator(inputs)
+
+        return preds
+
+    def discriminate_with_features(self, inputs):
+        preds, feats = self.discriminator(inputs)
+
+        return preds, feats
+
+    def freeze_params(self, enc_freeze, dec_freeze, dis_freeze):
+        for enc in self.encoders:
+            for p in enc.parameters():
+                p.requires_grad = enc_freeze
+
+        for dec in self.decoders:
+            for p in dec.parameters():
+                p.requires_grad = dec_freeze
+
+        for p in self.discriminator.parameters():
+            p.requires_grad = dis_freeze
 
 
 # class Aux(nn.Module):

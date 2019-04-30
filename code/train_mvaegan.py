@@ -292,25 +292,25 @@ def run(args, kwargs):
                 inputs = [image, text_repr]
                 # compute ELBO for each data combo
                 for sel in binary_selections:
-                        sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
+                    sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
 
-                        recs, mu, logvar, logj, z0, zk = model(sel_inputs)
+                    recs, mu, logvar, logj, z0, zk = model(sel_inputs)
 
-                        z_aux = torch.randn(z0.shape).to(z0)
-                        recs_aux = model.decode(z_aux)
+                    z_aux = torch.randn(z0.shape).to(z0)
+                    recs_aux = model.decode(z_aux)
 
-                        preds_true, feats_true = model.discriminate_with_features(sel_inputs)
-                        preds_fake, feats_fake = model.discriminate_with_features(recs)
-                        preds_aux = model.discriminate(recs_aux)
+                    preds_true, feats_true = model.discriminate_with_features(sel_inputs)
+                    preds_fake, feats_fake = model.discriminate_with_features(recs)
+                    preds_aux = model.discriminate(recs_aux)
 
-                        GAN_loss, recon_loss, kl = vaegan_losses(feats_fake, feats_true, preds_true, preds_fake,
-                                                                 preds_aux, loss_funcs, mu, logvar, z0, zk, logj,
-                                                                 args, annealing_factor=annealing_factor)
-                        enc_loss += kl + recon_loss
+                    GAN_loss, recon_loss, kl = vaegan_losses(feats_fake, feats_true, preds_true, preds_fake,
+                                                             preds_aux, loss_funcs, mu, logvar, z0, zk, logj,
+                                                             args, annealing_factor=annealing_factor)
+                    enc_loss += kl + recon_loss
 
-                        dec_loss += recon_loss - GAN_loss
+                    dec_loss += recon_loss - GAN_loss
 
-                        dis_loss += GAN_loss
+                    dis_loss += GAN_loss
 
                 enc_loss_meter.update(enc_loss.item(), batch_size)
                 dec_loss_meter.update(dec_loss.item(), batch_size)
@@ -319,13 +319,31 @@ def run(args, kwargs):
                 # compute gradients and take step
                 model.freeze_params(True, False, False)
                 enc_loss.backward(retain_graph=True)
+                # print('encoders grad:')
+                # for enc in model.encoders:
+                #     for name, p in enc.named_parameters():
+                #         print(name, p.grad.mean())
+                #         # break
+                #     break
 
                 model.freeze_params(False, True, False)
                 dec_loss.backward(retain_graph=True)
+                # print('decoders grad:')
+                # for dec in model.decoders:
+                #     for name, p in dec.named_parameters():
+                #         print(name, p.grad.mean())
+                #         # break
+                #     break
 
                 model.freeze_params(False, False, True)
                 dis_loss.backward()
-
+                # print('discriminators grad:')
+                # for dis in model.discriminators:
+                #     for name, p in dis.named_parameters():
+                #         print(name, p.grad.mean())
+                #         # break
+                #     break
+                model.freeze_params(True, True, True)
                 optimizer.step()
 
                 if batch_idx % args.log_interval == 0:

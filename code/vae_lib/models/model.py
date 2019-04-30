@@ -104,8 +104,9 @@ class ImageDiscriminator(nn.Module):
     def forward(self, x):
         h = self.swish(self.fc1(x.view(-1, 784)))
         h = self.swish(self.fc2(h))
-        h = self.swish(self.fc_latent(h))
-        return self.logsoftmax(self.out(h)), h
+        h_latent = self.swish(self.fc_latent(h))
+        out = self.logsoftmax(self.out(h_latent))
+        return out, h_latent
 
 
 class ImageDecoder(nn.Module):
@@ -250,3 +251,38 @@ def prior_expert(size, use_cuda=False):
     if use_cuda:
         mu, logvar = mu.cuda(), logvar.cuda()
     return mu, logvar
+
+
+class MultimodalDiscriminator(nn.Module):
+    """Parametrizes q(z|x).
+
+    @param n_latents: integer
+                      number of latent dimensions
+    """
+    def __init__(self, embedders, n_latents, n_classes):
+        super(ImageDiscriminator, self).__init__()
+        self.embedders = nn.ModuleList()
+        for emb in embedders:
+            self.embedders.append(emb)
+        self.fc1 = nn.Linear(512, 512)
+        self.fc_latent = nn.Linear(512, n_latents)
+        self.out = nn.Linear(n_latents, n_classes)
+        self.swish = Swish()
+        self.logsoftmax = nn.LogSoftmax()
+
+    def forward(self, inputs):
+        batch_size = 1
+        for inp in inputs:
+            if inp is not None:
+                batch_size = inp.size(0)
+
+        e = torch.zeros(batch_size, 512)
+        for inp, emb in zip(inputs, self.embedders):
+            if inp is None:
+                continue
+            e += emb(inp)
+
+        h = self.swish(self.fc1(e))
+        h_latent = self.swish(self.fc_latent(h))
+        out = self.logsoftmax(self.out(h_latent))
+        return out, h_latent
