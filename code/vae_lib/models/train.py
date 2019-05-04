@@ -134,12 +134,12 @@ def save_checkpoint(state, is_best, folder='./', filename='checkpoint.pth.tar'):
                         os.path.join(folder, 'model_best.pth.tar'))
 
 
-def load_checkpoint(file_path, use_cuda=False):
+def load_checkpoint(file_path, model_class, use_cuda=False):
     checkpoint = torch.load(file_path) if use_cuda else \
         torch.load(file_path, map_location=lambda storage, location: storage)
 
     # model = CNFVAE.CNFVAE(checkpoint['args'])
-    model = MVAEGAN.MVAEGAN(checkpoint['args'], checkpoint['encoders'], checkpoint['decoders'], checkpoint['discriminators'])
+    model = model_class(checkpoint['args'], checkpoint['encoders'], checkpoint['decoders'], checkpoint['embeddings'])
     model.load_state_dict(checkpoint['state_dict'])
     return model
 

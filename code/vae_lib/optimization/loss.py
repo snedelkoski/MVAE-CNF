@@ -418,8 +418,8 @@ def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
 
 
 def mcvaegan_losses(recon, input, pred_true, pred_fake, pred_aux,
-                    loss_func, z_mu, z_var, z_0, z_k, ldj, args,
-                    annealing_factor=1.0):
+                    pred_mismatch, loss_func, z_mu, z_var, z_0,
+                    z_k, ldj, args, annealing_factor=1.0):
     """Multimodal VAE-GAN ELBO loss function.
     """
     batch_size = input.shape[0]
@@ -443,9 +443,12 @@ def mcvaegan_losses(recon, input, pred_true, pred_fake, pred_aux,
     GAN_loss = torch.zeros(batch_size, ).to(kl)  # default params
     true_labels = torch.ones((batch_size, ), dtype=torch.int64).to(kl.device)
     fake_labels = torch.zeros((batch_size, ), dtype=torch.int64).to(kl.device)
-    GAN_loss[:] += F.nll_loss(pred_true, true_labels).to(GAN_loss)
+
+    GAN_loss[:] += F.nll_loss(pred_true, true_labels).to(GAN_loss) * 2
     GAN_loss[:] += F.nll_loss(pred_fake, fake_labels).to(GAN_loss)
     GAN_loss[:] += F.nll_loss(pred_aux, fake_labels).to(GAN_loss)
+    if pred_mismatch is not None:
+        GAN_loss[:] += F.nll_loss(pred_mismatch, fake_labels).to(GAN_loss)
 
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114

@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
+from code.vae_lib.models.MVAEGAN import MCVAEGAN
 
 from code.vae_lib.models.train import load_checkpoint
 from code.vae_lib.models.train_misc import override_divergence_fn
@@ -51,8 +52,8 @@ if __name__ == "__main__":
     import os
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_path', type=str, default='../../trained_models/model_best.pth.tar',help='path to trained model file')
-    parser.add_argument('--n-samples', type=int, default=64, 
+    parser.add_argument('--model_path', type=str, default='../../trained_models/checkpoint.pth.tar', help='path to trained model file')
+    parser.add_argument('--n-samples', type=int, default=64,
                         help='Number of images and texts to sample [default: 64]')
     # condition sampling on a particular images
     parser.add_argument('--condition-on-image', type=int, default=None,
@@ -65,7 +66,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.cuda = args.cuda and torch.cuda.is_available()
 
-    model = load_checkpoint(args.model_path, use_cuda=args.cuda)
+    model = load_checkpoint(args.model_path, MCVAEGAN, use_cuda=args.cuda)
     model.eval()
     if args.cuda:
         model.cuda()

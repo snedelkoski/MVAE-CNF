@@ -31,6 +31,7 @@ from code.vae_lib.models.train import AverageMeter, save_checkpoint
 from code.vae_lib.optimization.training import train, evaluate
 from code.vae_lib.utils.load_data import load_dataset
 from code.vae_lib.utils.plotting import plot_training_curve
+from code.vae_lib.models.train import load_checkpoint
 SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
 parser = argparse.ArgumentParser(description='PyTorch Sylvester Normalizing flows')
 
@@ -77,7 +78,7 @@ parser.add_argument(
 parser.add_argument(
     '-bs', '--batch_size', type=int, default=2048, metavar='BATCH_SIZE', help='input batch size for training'
 )
-parser.add_argument('-lr', '--learning_rate', type=float, default=1e-5, metavar='LEARNING_RATE', help='learning rate')
+parser.add_argument('-lr', '--learning_rate', type=float, default=1e-4, metavar='LEARNING_RATE', help='learning rate')
 
 parser.add_argument(
     '-w', '--warmup', type=int, default=10, metavar='N',
@@ -148,6 +149,21 @@ if args.cuda:
 kwargs = {'num_workers': 0, 'pin_memory': True} if args.cuda else {}
 
 
+def mismatch_text_input(text_input):
+
+    mismatched_text = torch.zeros(text_input.shape).to(text_input)
+    for i in range(text_input.shape[0]):
+        text_ind = torch.argmax(text_input[i])
+        mismatch = np.random.randint(1, 9)
+        mismatch_ind = (text_ind + mismatch) % 10
+
+        mismatched_text[i, mismatch_ind] = 1
+
+    mismatched_text += 0.001
+
+    return mismatched_text
+
+
 def run(args, kwargs):
     # ==================================================================================================================
     # SNAPSHOTS
@@ -209,7 +225,11 @@ def run(args, kwargs):
         loss_func = F.mse_loss
 
         # model = GenMVAE(args, encoders, decoders)
-        model = MCVAEGAN(args, encoders, decoders, embeddings)
+        if args.model_path == '':
+            model = MCVAEGAN(args, encoders, decoders, embeddings)
+        else:
+            print('LOADING MODEL FROM FILE')
+            model = load_checkpoint(args.model_path, MCVAEGAN, use_cuda=args.cuda)
 
         # if args.retrain_encoder:
         #     logger.info(f"Initializing decoder from {args.model_path}")
@@ -295,17 +315,26 @@ def run(args, kwargs):
                     sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
 
                     recs, mu, logvar, logj, z0, zk = model(sel_inputs)
+                    sel_recs = [rec if flag else None for flag, rec in zip(sel, recs)]
 
                     z_aux = torch.randn(z0.shape).to(z0)
                     recs_aux = model.decode(z_aux)
 
+                    sel_recs_aux = [rec if flag else None for flag, rec in zip(sel, recs_aux)]
+
                     pred_true, feats_true = model.discriminate_with_features(sel_inputs)
-                    pred_fake, feats_fake = model.discriminate_with_features(recs)
-                    pred_aux = model.discriminate(recs_aux)
+                    pred_fake, feats_fake = model.discriminate_with_features(sel_recs)
+                    pred_aux = model.discriminate(sel_recs_aux)
+                    if sel_inputs[1] is None:
+                        pred_mismatch = None
+                    else:
+                        mismatched_text = mismatch_text_input(sel_inputs[1])
+                        mismatched_input = [sel_inputs[0], mismatched_text]
+                        pred_mismatch = model.discriminate(mismatched_input)
 
                     GAN_loss, recon_loss, kl = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake,
-                                                             pred_aux, loss_func, mu, logvar, z0, zk, logj,
-                                                             args, annealing_factor=annealing_factor)
+                                                               pred_aux, pred_mismatch, loss_func, mu, logvar, z0, zk, logj,
+                                                               args, annealing_factor=annealing_factor)
                     enc_loss += kl + recon_loss
 
                     dec_loss += recon_loss - GAN_loss
@@ -398,18 +427,28 @@ def run(args, kwargs):
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                     sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
+
                     recs, mu, logvar, logj, z0, zk = model(sel_inputs)
+                    sel_recs = [rec if flag else None for flag, rec in zip(sel, recs)]
 
                     z_aux = torch.randn(z0.shape).to(z0)
-
                     recs_aux = model.decode(z_aux)
 
-                    pred_true, feats_true = model.discriminate_with_features(sel_inputs)
-                    pred_fake, feats_fake = model.discriminate_with_features(recs)
-                    pred_aux = model.discriminate(recs_aux)
+                    sel_recs_aux = [rec if flag else None for flag, rec in zip(sel, recs_aux)]
 
-                    GAN_loss, recon_loss, kl = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake, pred_aux,
-                                                               loss_func, mu, logvar, z0, zk, logj, args)
+                    pred_true, feats_true = model.discriminate_with_features(sel_inputs)
+                    pred_fake, feats_fake = model.discriminate_with_features(sel_recs)
+                    pred_aux = model.discriminate(sel_recs_aux)
+                    if sel_inputs[1] is None:
+                        pred_mismatch = None
+                    else:
+                        mismatched_text = mismatch_text_input(sel_inputs[1])
+                        mismatched_input = [sel_inputs[0], mismatched_text]
+                        pred_mismatch = model.discriminate(mismatched_input)
+
+                    GAN_loss, recon_loss, kl = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake,
+                                                               pred_aux, pred_mismatch, loss_func, mu, logvar, z0, zk, logj,
+                                                               args)
                     enc_loss += kl + recon_loss
 
                     dec_loss += recon_loss - GAN_loss
@@ -442,6 +481,17 @@ def run(args, kwargs):
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
             }, is_best, folder='./trained_models')
+            if epoch % 200 == 0:
+                save_checkpoint({
+                    'state_dict': model.state_dict(),
+                    'args': args,
+                    'encoders': encoders,
+                    'decoders': decoders,
+                    'embeddings': embeddings,
+                    'best_loss': best_loss,
+                    'n_latents': args.z_size,
+                    'optimizer': optimizer.state_dict(),
+                }, is_best, folder='./trained_models', filename='checkpoint' + str(epoch) + '.pth.tar')
 
 
 if __name__ == "__main__":
