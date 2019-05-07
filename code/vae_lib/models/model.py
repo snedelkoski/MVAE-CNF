@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn import functional as F
 from torch.nn.parameter import Parameter
+# from ml_utils.LSTM import LSTMLayer
 
 
 class MVAE(nn.Module):
@@ -297,3 +298,43 @@ class View(nn.Module):
 
     def forward(self, x):
         return x.view(*self.shape)
+
+
+# class LSTMEncoder(nn.Module):
+#     """Parametrizes p(x|z).
+#
+#     @param n_latents: integer
+#                       number of latent dimensions
+#     """
+#     def __init__(self, input_size, hidden_size, n_latents):
+#         super().__init__()
+#         lstm = LSTMLayer(input_size, hidden_size, 1)
+#         self.out1 = nn.Linear(hidden_size, n_latents)
+#         self.out2 = nn.Linear(hidden_size, n_latents)
+#         self.swish = Swish()
+#
+#     def forward(self, z):
+#         h = self.swish(self.fc1(z))
+#         h = self.swish(self.fc2(h))
+#         h = self.swish(self.fc3(h))
+#         return self.fc4(h)  # NOTE: no sigmoid here. See train.py
+#
+# class LSTMDecoder(nn.Module):
+#     """Parametrizes p(x|z).
+#
+#     @param n_latents: integer
+#                       number of latent dimensions
+#     """
+#     def __init__(self, n_latents):
+#         super(ImageDecoder, self).__init__()
+#         self.fc1 = nn.Linear(n_latents, 512)
+#         self.fc2 = nn.Linear(512, 512)
+#         self.fc3 = nn.Linear(512, 512)
+#         self.fc4 = nn.Linear(512, 784)
+#         self.swish = Swish()
+#
+#     def forward(self, z):
+#         h = self.swish(self.fc1(z))
+#         h = self.swish(self.fc2(h))
+#         h = self.swish(self.fc3(h))
+#         return self.fc4(h)  # NOTE: no sigmoid here. See train.py

@@ -345,41 +345,43 @@ def run(args, kwargs):
                 dec_loss_meter.update(dec_loss.item(), batch_size)
                 dis_loss_meter.update(dis_loss.item(), batch_size)
 
+                if dis_loss < 4 or enc_loss > 7:
                 # compute gradients and take step
-                model.freeze_params(True, False, False)
-                enc_loss.backward(retain_graph=True)
-                # print('encoders grad:')
-                # for enc in model.encoders:
-                #     for name, p in enc.named_parameters():
-                #         print(name, p.grad.mean())
-                #         # break
-                #     break
+                    model.freeze_params(True, False, False)
+                    enc_loss.backward(retain_graph=True)
+                    # print('encoders grad:')
+                    # for enc in model.encoders:
+                    #     for name, p in enc.named_parameters():
+                    #         print(name, p.grad.mean())
+                    #         # break
+                    #     break
 
-                model.freeze_params(False, True, False)
-                dec_loss.backward(retain_graph=True)
-                # print('decoders grad:')
-                # for dec in model.decoders:
-                #     for name, p in dec.named_parameters():
-                #         print(name, p.grad.mean())
-                #         # break
-                #     break
+                    model.freeze_params(False, True, False)
+                    dec_loss.backward(retain_graph=True)
+                    # print('decoders grad:')
+                    # for dec in model.decoders:
+                    #     for name, p in dec.named_parameters():
+                    #         print(name, p.grad.mean())
+                    #         # break
+                    #     break
 
-                model.freeze_params(False, False, True)
-                dis_loss.backward()
-                # print('discriminators grad:')
-                # for dis in model.discriminators:
-                #     for name, p in dis.named_parameters():
-                #         print(name, p.grad.mean())
-                #         # break
-                #     break
+                if enc_loss < 7 or dis_loss > 4:
+                    model.freeze_params(False, False, True)
+                    dis_loss.backward()
+                    # print('discriminators grad:')
+                    # for dis in model.discriminators:
+                    #     for name, p in dis.named_parameters():
+                    #         print(name, p.grad.mean())
+                    #         # break
+                    #     break
                 model.freeze_params(True, True, True)
                 optimizer.step()
 
-                if batch_idx % args.log_interval == 0:
-                    print(('Train Epoch: {} [{}/{} ({:.0f}%)]\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
-                          '\tDiscriminator Loss: {:.3f}\tAnnealing-Factor: {:.3f}').format(
-                              epoch, batch_idx * len(image), len(train_loader.dataset),
-                              100. * batch_idx / len(train_loader), enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg, annealing_factor))
+                # if batch_idx % args.log_interval == 0:
+                #     print(('Train Epoch: {} [{}/{} ({:.0f}%)]\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
+                #           '\tDiscriminator Loss: {:.3f}\tAnnealing-Factor: {:.3f}').format(
+                #               epoch, batch_idx * len(image), len(train_loader.dataset),
+                #               100. * batch_idx / len(train_loader), enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg, annealing_factor))
 
             print(('====> Epoch: {}\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
                   '\tDiscriminator Loss: {:.3f}').format(epoch, enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg))
@@ -467,9 +469,9 @@ def run(args, kwargs):
         for epoch in range(1, args.epochs + 1):
             train(epoch)
             # print ("Test")
-            test_loss, _, _ = test(epoch)
-            is_best = test_loss < best_loss
-            best_loss = min(test_loss, best_loss)
+            enc_loss, dec_loss, dis_loss = test(epoch)
+            is_best = enc_loss < best_loss
+            best_loss = min(enc_loss, best_loss)
             # save the best model and current model
             save_checkpoint({
                 'state_dict': model.state_dict(),
@@ -481,7 +483,7 @@ def run(args, kwargs):
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
             }, is_best, folder='./trained_models')
-            if epoch % 200 == 0:
+            if (epoch - 1) % 5 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
                     'args': args,
@@ -491,7 +493,10 @@ def run(args, kwargs):
                     'best_loss': best_loss,
                     'n_latents': args.z_size,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, folder='./trained_models', filename='checkpoint' + str(epoch) + '.pth.tar')
+                    'encoder_loss': enc_loss,
+                    'decoder_loss': dec_loss,
+                    'discriminator_loss': dis_loss,
+                }, is_best, folder='./trained_models', filename='checkpoint' + str(epoch - 1) + '.pth.tar')
 
 
 if __name__ == "__main__":

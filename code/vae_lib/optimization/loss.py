@@ -441,8 +441,14 @@ def mcvaegan_losses(recon, input, pred_true, pred_fake, pred_aux,
     mses[:] = torch.mean(loss_func(recon, input, reduction='none'), dim=1).to(mses)
 
     GAN_loss = torch.zeros(batch_size, ).to(kl)  # default params
+
+    # adding noisy labels
     true_labels = torch.ones((batch_size, ), dtype=torch.int64).to(kl.device)
+    noise = torch.rand(true_labels.shape).to(true_labels)
+    true_labels -= (noise / 10)
     fake_labels = torch.zeros((batch_size, ), dtype=torch.int64).to(kl.device)
+    noise = torch.rand(fake_labels.shape).to(fake_labels)
+    fake_labels += (noise / 10)
 
     GAN_loss[:] += F.nll_loss(pred_true, true_labels).to(GAN_loss) * 2
     GAN_loss[:] += F.nll_loss(pred_fake, fake_labels).to(GAN_loss)
