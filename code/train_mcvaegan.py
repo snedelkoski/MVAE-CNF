@@ -95,7 +95,7 @@ parser.add_argument(
     '-mhs', '--made_h_size', type=int, default=320, metavar='MADEHSIZE',
     help='Width of mades for iaf. Ignored for all other flows.'
 )
-parser.add_argument('--z_size', type=int, default=64, metavar='ZSIZE', help='how many stochastic hidden units')
+parser.add_argument('--z_size', type=int, default=128, metavar='ZSIZE', help='how many stochastic hidden units')
 # gpu/cpu
 parser.add_argument('--gpu_num', type=int, default=0, metavar='GPU', help='choose GPU to run on.')
 

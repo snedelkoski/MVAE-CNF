@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn import functional as F
 from torch.nn.parameter import Parameter
+from ml_utils.LSTM import LSTMLayer
 # from ml_utils.LSTM import LSTMLayer
 
 
@@ -319,22 +320,64 @@ class View(nn.Module):
 #         h = self.swish(self.fc3(h))
 #         return self.fc4(h)  # NOTE: no sigmoid here. See train.py
 #
-# class LSTMDecoder(nn.Module):
-#     """Parametrizes p(x|z).
-#
-#     @param n_latents: integer
-#                       number of latent dimensions
-#     """
-#     def __init__(self, n_latents):
-#         super(ImageDecoder, self).__init__()
-#         self.fc1 = nn.Linear(n_latents, 512)
-#         self.fc2 = nn.Linear(512, 512)
-#         self.fc3 = nn.Linear(512, 512)
-#         self.fc4 = nn.Linear(512, 784)
-#         self.swish = Swish()
-#
-#     def forward(self, z):
-#         h = self.swish(self.fc1(z))
-#         h = self.swish(self.fc2(h))
-#         h = self.swish(self.fc3(h))
-#         return self.fc4(h)  # NOTE: no sigmoid here. See train.py
+class SeqMLP(nn.Module):
+    """Parametrizes p(x|z).
+
+    @param n_latents: integer
+                      number of latent dimensions
+    """
+    def __init__(self, input_size, output_size, layers_sizes=[1024, 512], dropout_prob=0):
+        super().__init__()
+
+        self.output_size = output_size
+        self.layers_sizes = layers_sizes
+        self.dropout_prob = dropout_prob
+        self.layers = nn.ModuleList()
+        self.dropout = nn.Dropout(p=self.dropout_prob)
+        self.layers.append(nn.Linear(input_size, self.layers_sizes[0]))
+
+        count = 1
+        while count <= len(self.layers_sizes) - 1:
+            print(count)
+            print(self.layers_sizes[count - 1], self.layers_sizes[count])
+            self.layers.append(nn.Linear(self.layers_sizes[count - 1], self.layers_sizes[count]))
+            count += 1
+        self.layers.append(nn.Linear(self.layers_sizes[-1], output_size))
+        self.swish = Swish()
+        self.to(self.device)
+
+    def forward(self, input):
+        if type(input) == list:
+            input = torch.cat(input, dim=1)
+        results = input
+        for i in range(len(self.layers) - 1):
+            if i > 0:
+                results = self.dropout(results)
+            results = self.swish(self.layers[i](results))
+        output = self.layers[-1](results)
+
+        return output
+
+
+class RecurrentState(LSTMLayer):
+    def __init__(self, input_size, hidden_size,
+                 verbose=1, random_seed=10, dropout_prob=0.0, device=None):
+        super().__init__(input_size, hidden_size, 1, verbose=verbose, random_seed=random_seed, dropout_prob=dropout_prob, device=device)
+
+    def forward(self, input):
+        if type(input) == list:
+            input = torch.cat(input, dim=1)
+
+        if self.verbose > 1:
+            print('Hidden shape', self.hidden.shape)
+            print('Input shape', input.shape)
+        combined = torch.cat((input, self.hidden), 1)
+        forget = F.sigmoid(self.f_gate(combined))
+        input = F.sigmoid(self.i_gate(combined))
+        cell_new = F.tanh(self.c_gate(combined))
+        self.hidden = F.sigmoid(self.o_gate(combined))
+        self.cell = (forget * self.cell) + (input * cell_new)
+        self.hidden = self.hidden * F.tanh(self.cell)
+        self.hidden = self.dropout(self.hidden)
+
+        return self.hidden
