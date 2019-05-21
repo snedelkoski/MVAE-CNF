@@ -353,6 +353,47 @@ def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, 
     return ELBO, bces, kl
 
 
+def seq_elbo_loss(recons, inputs, loss_func, z_mu, z_var, p_mu, p_var, z_0, z_k,
+                  ldj, args, lambda_weights=None, annealing_factor=1.0, beta=1.):
+    """Multimodal ELBO loss function.
+    """
+    if lambda_weights is None:
+        lambda_weights = torch.ones((len(inputs), ))
+    batch_size = 0
+    for inp in inputs:
+        if inp is not None:
+            batch_size = inp.shape[0]
+    # ln p(z_k)  (not averaged)
+    if z_k is None:
+        log_p_zk = log_normal_diag(z_0, mean=p_mu, log_var=p_var, dim=1)
+    else:
+        log_p_zk = log_normal_diag(z_k, mean=p_mu, log_var=p_var, dim=1)
+    # ln q(z_0)  (not averaged)
+    log_q_z0 = log_normal_diag(z_0, mean=z_mu, log_var=z_var, dim=1)
+    # N E_q0[ ln q(z_0) - ln p(z_k) ]
+    # summed_logs = torch.sum(log_q_z0 - log_p_zk)
+    logs = log_q_z0 - log_p_zk
+    # sum over batches
+    # summed_ldj = torch.sum(ldj)
+
+    # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
+    kl = logs.sub(ldj).to(torch.double)
+
+    bces = torch.zeros(batch_size, (len(inputs))).to(kl)  # default params
+    for i in range(len(inputs)):
+        if inputs[i] is not None:
+            bces[:, i] = torch.sum(loss_func(recons[i], inputs[i], reduction='none'),
+                                   dim=1, dtype=torch.double)
+
+    lambda_weights = lambda_weights.to(bces)
+    # print('mean_bce', torch.mean(bces, dim=0))
+    # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
+    # https://arxiv.org/abs/1312.6114
+    ELBO = torch.sum(lambda_weights * bces, dim=1) + annealing_factor * kl
+
+    return ELBO, bces, kl
+
+
 def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
                   loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, lambda_weights=None, annealing_factor=1.0):
     """Multimodal VAE-GAN ELBO loss function.
@@ -388,20 +429,33 @@ def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
             # print('mses type', mses.type())
             mses[:, i] = torch.mean(loss_funcs[i](recons[i], inputs[i], reduction='none'), dim=1).to(mses)
 
+    discriminator_pct = 0
+    dis_count = 0
     GAN_loss = torch.zeros(batch_size, len(inputs)).to(kl)  # default params
     true_labels = torch.ones((batch_size, ), dtype=torch.int64).to(kl.device)
+    noise = torch.rand(true_labels.shape).to(true_labels)
+    true_labels -= (noise / 5)
     fake_labels = torch.zeros((batch_size, ), dtype=torch.int64).to(kl.device)
+    noise = torch.rand(fake_labels.shape).to(fake_labels)
+    fake_labels += (noise / 5)
     for i in range(len(inputs)):
         # print('preds size', preds_true[i].shape)
         # print('labels size', true_labels.shape)
         # print('labels', true_labels.type())
         if preds_true[i] is not None:
             GAN_loss[:, i] += F.nll_loss(preds_true[i], true_labels).to(GAN_loss)
+            discriminator_pct += torch.mean((torch.argmax(preds_true[i], dim=1) == true_labels).type(torch.float))
+            dis_count += 1
         if preds_fake[i] is not None:
             GAN_loss[:, i] += F.nll_loss(preds_fake[i], fake_labels).to(GAN_loss)
+            discriminator_pct += torch.mean((torch.argmax(preds_fake[i], dim=1) == fake_labels).type(torch.float))
+            dis_count += 1
         if preds_aux[i] is not None:
             GAN_loss[:, i] += F.nll_loss(preds_aux[i], fake_labels).to(GAN_loss)
+            discriminator_pct += torch.mean((torch.argmax(preds_aux[i], dim=1) == fake_labels).type(torch.float))
+            dis_count += 1
 
+    discriminator_pct /= dis_count
     lambda_weights = lambda_weights.to(mses)
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
@@ -414,7 +468,7 @@ def vaegan_losses(recons, inputs, preds_true, preds_fake, preds_aux,
 
     return torch.mean(torch.sum(GAN_loss, dim=1)),\
         torch.mean(torch.sum(lambda_weights * mses, dim=1)),\
-        torch.mean(annealing_factor * kl)
+        torch.mean(annealing_factor * kl), discriminator_pct
 
 
 def mcvaegan_losses(recon, input, pred_true, pred_fake, pred_aux,
@@ -450,12 +504,23 @@ def mcvaegan_losses(recon, input, pred_true, pred_fake, pred_aux,
     noise = torch.rand(fake_labels.shape).to(fake_labels)
     fake_labels += (noise / 10)
 
+    discriminator_pct = 0
+
     GAN_loss[:] += F.nll_loss(pred_true, true_labels).to(GAN_loss) * 2
+    discriminator_pct += torch.mean((torch.argmax(pred_true, dim=1) == true_labels).type(torch.float))
     GAN_loss[:] += F.nll_loss(pred_fake, fake_labels).to(GAN_loss)
-    GAN_loss[:] += F.nll_loss(pred_aux, fake_labels).to(GAN_loss)
+    discriminator_pct += torch.mean((torch.argmax(pred_fake, dim=1) == fake_labels).type(torch.float))
+    pct_count = 2
+    if pred_aux is not None:
+        GAN_loss[:] += F.nll_loss(pred_aux, fake_labels).to(GAN_loss)
+        discriminator_pct += torch.mean((torch.argmax(pred_aux, dim=1) == fake_labels).type(torch.float))
+        pct_count += 1
     if pred_mismatch is not None:
         GAN_loss[:] += F.nll_loss(pred_mismatch, fake_labels).to(GAN_loss)
+        discriminator_pct += torch.mean((torch.argmax(pred_mismatch, dim=1) == fake_labels).type(torch.float))
+        pct_count += 1 
 
+    discriminator_pct /= pct_count
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
     # https://arxiv.org/abs/1312.6114
     # print('gan loss size', GAN_loss.shape)
@@ -467,7 +532,7 @@ def mcvaegan_losses(recon, input, pred_true, pred_fake, pred_aux,
 
     return torch.mean(GAN_loss),\
         torch.mean(mses),\
-        torch.mean(annealing_factor * kl)
+        torch.mean(annealing_factor * kl), discriminator_pct
 
 
 def binary_cross_entropy_with_logits(input, target):

@@ -15,7 +15,8 @@ import random
 from code.vae_lib.optimization.loss import mcvaegan_losses, cross_entropy, binary_cross_entropy_with_logits
 import os
 
-from code.vae_lib.models.model import TextReprEncoder, TextDiscriminator, TextDecoder, ImageEncoder, ImageDiscriminator, ImageDecoder, View
+from code.vae_lib.models.model import TextReprEncoder, TextDiscriminator, TextDecoder,\
+    ImageEncoder, ImageDiscriminator, ImageDecoder, View, SeqMLP
 
 from torch.autograd import Variable
 from torchvision import transforms
@@ -65,6 +66,9 @@ parser.add_argument(
     '-e', '--epochs', type=int, default=100, metavar='EPOCHS', help='number of epochs to train (default: 2000)'
 )
 parser.add_argument(
+    '--start_epoch', type=int, default=1, metavar='STARTEPOCH', help='number of epochs to train (default: 2000)'
+)
+parser.add_argument(
     '--num_inputs', type=int, default=2, metavar='EPOCHS', help='number of epochs to train (default: 2000)'
 )
 parser.add_argument(
@@ -95,7 +99,7 @@ parser.add_argument(
     '-mhs', '--made_h_size', type=int, default=320, metavar='MADEHSIZE',
     help='Width of mades for iaf. Ignored for all other flows.'
 )
-parser.add_argument('--z_size', type=int, default=128, metavar='ZSIZE', help='how many stochastic hidden units')
+parser.add_argument('--z_size', type=int, default=256, metavar='ZSIZE', help='how many stochastic hidden units')
 # gpu/cpu
 parser.add_argument('--gpu_num', type=int, default=0, metavar='GPU', help='choose GPU to run on.')
 
@@ -221,7 +225,8 @@ def run(args, kwargs):
         # flow parameters and architecture choice are passed on to model through args
         encoders = [ImageEncoder, TextReprEncoder]
         decoders = [ImageDecoder, TextDecoder]
-        embeddings = [nn.Sequential(View((-1, 784)), nn.Linear(784, 1024)), nn.Linear(10, 1024), ]
+        embeddings = [nn.Sequential(View((-1, 784)), SeqMLP(784, 512, layers_sizes=[512])),
+                      SeqMLP(10, 512, layers_sizes=[512])]
         loss_func = F.mse_loss
 
         # model = GenMVAE(args, encoders, decoders)
@@ -267,6 +272,7 @@ def run(args, kwargs):
             enc_loss_meter = AverageMeter()
             dec_loss_meter = AverageMeter()
             dis_loss_meter = AverageMeter()
+            dis_pct_meter = AverageMeter()
             binary_selections = [np.ones((args.num_inputs, 1))]
 
             for i in range(args.num_inputs):
@@ -309,31 +315,32 @@ def run(args, kwargs):
                 enc_loss = 0
                 dec_loss = 0
                 dis_loss = 0
+                dis_pct = 0
                 inputs = [image, text_repr]
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                     sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
 
                     recs, mu, logvar, logj, z0, zk = model(sel_inputs)
-                    sel_recs = [rec if flag else None for flag, rec in zip(sel, recs)]
+                    # sel_recs = [rec if flag else None for flag, rec in zip(sel, recs)]
 
-                    z_aux = torch.randn(z0.shape).to(z0)
-                    recs_aux = model.decode(z_aux)
+                    # z_aux = torch.randn(z0.shape).to(z0)
+                    # recs_aux = model.decode(z_aux)
 
-                    sel_recs_aux = [rec if flag else None for flag, rec in zip(sel, recs_aux)]
+                    # sel_recs_aux = [rec if flag else None for flag, rec in zip(sel, recs_aux)]
 
-                    pred_true, feats_true = model.discriminate_with_features(sel_inputs)
-                    pred_fake, feats_fake = model.discriminate_with_features(sel_recs)
-                    pred_aux = model.discriminate(sel_recs_aux)
-                    if sel_inputs[1] is None:
-                        pred_mismatch = None
-                    else:
-                        mismatched_text = mismatch_text_input(sel_inputs[1])
-                        mismatched_input = [sel_inputs[0], mismatched_text]
-                        pred_mismatch = model.discriminate(mismatched_input)
+                    pred_true, feats_true = model.discriminate_with_features(inputs)
+                    pred_fake, feats_fake = model.discriminate_with_features(recs)
+                    # pred_aux = model.discriminate(sel_recs_aux)
+                    # if sel_inputs[1] is None:
+                    #     pred_mismatch = None
+                    # else:
+                    #     mismatched_text = mismatch_text_input(sel_inputs[1])
+                    #     mismatched_input = [sel_inputs[0], mismatched_text]
+                    #     pred_mismatch = model.discriminate(mismatched_input)
 
-                    GAN_loss, recon_loss, kl = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake,
-                                                               pred_aux, pred_mismatch, loss_func, mu, logvar, z0, zk, logj,
+                    GAN_loss, recon_loss, kl, pct = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake,
+                                                               None, None, loss_func, mu, logvar, z0, zk, logj,
                                                                args, annealing_factor=annealing_factor)
                     enc_loss += kl + recon_loss
 
@@ -341,40 +348,29 @@ def run(args, kwargs):
 
                     dis_loss += GAN_loss
 
+                    dis_pct += pct
+
+                dis_pct = dis_pct / len(binary_selections)
+
                 enc_loss_meter.update(enc_loss.item(), batch_size)
                 dec_loss_meter.update(dec_loss.item(), batch_size)
                 dis_loss_meter.update(dis_loss.item(), batch_size)
+                dis_pct_meter.update(dis_pct.item(), batch_size)
 
-                if dis_loss < 4 or enc_loss > 7:
+                if dis_loss < 4 or enc_loss > 6.5:
                 # compute gradients and take step
                     model.freeze_params(True, False, False)
                     enc_loss.backward(retain_graph=True)
-                    # print('encoders grad:')
-                    # for enc in model.encoders:
-                    #     for name, p in enc.named_parameters():
-                    #         print(name, p.grad.mean())
-                    #         # break
-                    #     break
 
                     model.freeze_params(False, True, False)
                     dec_loss.backward(retain_graph=True)
-                    # print('decoders grad:')
-                    # for dec in model.decoders:
-                    #     for name, p in dec.named_parameters():
-                    #         print(name, p.grad.mean())
-                    #         # break
-                    #     break
 
-                if enc_loss < 7 or dis_loss > 4:
+                if enc_loss < 6.5 or dis_loss > 4:
                     model.freeze_params(False, False, True)
-                    dis_loss.backward()
-                    # print('discriminators grad:')
-                    # for dis in model.discriminators:
-                    #     for name, p in dis.named_parameters():
-                    #         print(name, p.grad.mean())
-                    #         # break
-                    #     break
+                    dis_loss.backward(retain_graph=True)
+
                 model.freeze_params(True, True, True)
+                torch.nn.utils.clip_grad_value_(model.parameters(), 1)
                 optimizer.step()
 
                 # if batch_idx % args.log_interval == 0:
@@ -384,7 +380,8 @@ def run(args, kwargs):
                 #               100. * batch_idx / len(train_loader), enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg, annealing_factor))
 
             print(('====> Epoch: {}\tEncoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
-                  '\tDiscriminator Loss: {:.3f}').format(epoch, enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg))
+                  '\tDiscriminator Loss: {:.3f}\tDiscriminator Pct: {:.3f}').format(epoch, enc_loss_meter.avg,
+                  dec_loss_meter.avg, dis_loss_meter.avg, dis_pct_meter.avg))
 
         def test(epoch):
 
@@ -393,6 +390,7 @@ def run(args, kwargs):
             enc_loss_meter = AverageMeter()
             dec_loss_meter = AverageMeter()
             dis_loss_meter = AverageMeter()
+            dis_pct_meter = AverageMeter()
             binary_selections = [np.ones((args.num_inputs, 1))]
 
             for i in range(args.num_inputs):
@@ -425,48 +423,55 @@ def run(args, kwargs):
                 enc_loss = 0
                 dec_loss = 0
                 dis_loss = 0
+                dis_pct = 0
                 inputs = [image, text_repr]
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                     sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
 
                     recs, mu, logvar, logj, z0, zk = model(sel_inputs)
-                    sel_recs = [rec if flag else None for flag, rec in zip(sel, recs)]
+                    # sel_recs = [rec if flag else None for flag, rec in zip(sel, recs)]
 
-                    z_aux = torch.randn(z0.shape).to(z0)
-                    recs_aux = model.decode(z_aux)
+                    # z_aux = torch.randn(z0.shape).to(z0)
+                    # recs_aux = model.decode(z_aux)
 
-                    sel_recs_aux = [rec if flag else None for flag, rec in zip(sel, recs_aux)]
+                    # sel_recs_aux = [rec if flag else None for flag, rec in zip(sel, recs_aux)]
 
-                    pred_true, feats_true = model.discriminate_with_features(sel_inputs)
-                    pred_fake, feats_fake = model.discriminate_with_features(sel_recs)
-                    pred_aux = model.discriminate(sel_recs_aux)
-                    if sel_inputs[1] is None:
-                        pred_mismatch = None
-                    else:
-                        mismatched_text = mismatch_text_input(sel_inputs[1])
-                        mismatched_input = [sel_inputs[0], mismatched_text]
-                        pred_mismatch = model.discriminate(mismatched_input)
+                    pred_true, feats_true = model.discriminate_with_features(inputs)
+                    pred_fake, feats_fake = model.discriminate_with_features(recs)
+                    # pred_aux = model.discriminate(sel_recs_aux)
+                    # if sel_inputs[1] is None:
+                    #     pred_mismatch = None
+                    # else:
+                    #     mismatched_text = mismatch_text_input(sel_inputs[1])
+                    #     mismatched_input = [sel_inputs[0], mismatched_text]
+                    #     pred_mismatch = model.discriminate(mismatched_input)
 
-                    GAN_loss, recon_loss, kl = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake,
-                                                               pred_aux, pred_mismatch, loss_func, mu, logvar, z0, zk, logj,
-                                                               args)
+                    GAN_loss, recon_loss, kl, pct = mcvaegan_losses(feats_fake, feats_true, pred_true, pred_fake,
+                                                                    None, None, loss_func, mu, logvar, z0, zk, logj,
+                                                                    args)
                     enc_loss += kl + recon_loss
 
                     dec_loss += recon_loss - GAN_loss
 
                     dis_loss += GAN_loss
 
+                    dis_pct += pct
+
+                dis_pct = dis_pct / len(binary_selections)
+
                 enc_loss_meter.update(enc_loss.item(), batch_size)
                 dec_loss_meter.update(dec_loss.item(), batch_size)
                 dis_loss_meter.update(dis_loss.item(), batch_size)
+                dis_pct_meter.update(dis_pct.item(), batch_size)
 
             print(('====> Encoder Loss: {:.3f}\tDecoder Loss: {:.3f}' +
-                  '\tDiscriminator Loss: {:.3f}').format(enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg))
+                  '\tDiscriminator Loss: {:.3f}\tDiscriminator Pct: {:.3f}').format(enc_loss_meter.avg,
+                  dec_loss_meter.avg, dis_loss_meter.avg, dis_pct_meter.avg))
             return enc_loss_meter.avg, dec_loss_meter.avg, dis_loss_meter.avg
 
         best_loss = sys.maxsize
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(args.start_epoch, args.epochs + 1):
             train(epoch)
             # print ("Test")
             enc_loss, dec_loss, dis_loss = test(epoch)
@@ -483,7 +488,7 @@ def run(args, kwargs):
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
             }, is_best, folder='./trained_models')
-            if (epoch - 1) % 5 == 0:
+            if (epoch - 1) % 100 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
                     'args': args,

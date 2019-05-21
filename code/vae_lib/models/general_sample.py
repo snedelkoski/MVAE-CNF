@@ -12,6 +12,7 @@ from torch.autograd import Variable
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 from code.vae_lib.models.MVAEGAN import MCVAEGAN
+from code.vae_lib.models.MVAEGAN import MVAEGAN
 
 from code.vae_lib.models.train import load_checkpoint
 from code.vae_lib.models.train_misc import override_divergence_fn
@@ -59,14 +60,16 @@ if __name__ == "__main__":
     parser.add_argument('--condition-on-image', type=int, default=None,
                         help='If True, generate text conditioned on an image.')
     # condition sampling on a particular text
-    parser.add_argument('--condition-on-text', type=int, default=None, 
+    parser.add_argument('--condition-on-text', type=int, default=None,
                         help='If True, generate images conditioned on a text.')
     parser.add_argument('--cuda', action='store_true', default=True,
                         help='enables CUDA training')
     args = parser.parse_args()
     args.cuda = args.cuda and torch.cuda.is_available()
 
-    model = load_checkpoint(args.model_path, MCVAEGAN, use_cuda=args.cuda)
+    # model = load_checkpoint(args.model_path, MCVAEGAN, use_cuda=args.cuda)
+    model = load_checkpoint(args.model_path, MVAEGAN, use_cuda=args.cuda,
+                            keys=['encoders', 'decoders', 'discriminators'])
     model.eval()
     if args.cuda:
         model.cuda()

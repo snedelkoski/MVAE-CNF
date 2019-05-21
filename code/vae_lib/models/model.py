@@ -102,12 +102,13 @@ class ImageDiscriminator(nn.Module):
         self.out = nn.Linear(n_latents, n_classes)
         self.swish = Swish()
         self.logsoftmax = nn.LogSoftmax()
+        self.dropout = nn.Dropout(p=0.6)
 
     def forward(self, x):
         h = self.swish(self.fc1(x.view(-1, 784)))
         h = self.swish(self.fc2(h))
         h_latent = self.swish(self.fc_latent(h))
-        out = self.logsoftmax(self.out(h_latent))
+        out = self.logsoftmax(self.out(self.dropout(h_latent)))
         return out, h_latent
 
 
@@ -186,13 +187,14 @@ class TextDiscriminator(nn.Module):
         self.out = nn.Linear(n_latents, n_classes)
         self.swish = Swish()
         self.logsoftmax = nn.LogSoftmax()
+        self.dropout = nn.Dropout(p=0.6)
 
     def forward(self, x):
         emb = self.fc1(x)
         h = self.swish(emb)
         h = self.swish(self.fc2(h))
         h = self.swish(self.fc_latent(h))
-        return self.logsoftmax(self.out(h)), h
+        return self.logsoftmax(self.out(self.dropout(h))), h
 
 
 class TextDecoder(nn.Module):
@@ -266,30 +268,34 @@ class MultimodalDiscriminator(nn.Module):
         self.embedders = nn.ModuleList()
         for emb in embedders:
             self.embedders.append(emb)
-        self.fc1 = nn.Linear(1024, 512)
+        self.fc1 = nn.Linear(len(embedders) * 512, 512)
         self.fc_latent = nn.Linear(512, n_latents)
         self.out = nn.Linear(n_latents, n_classes)
         self.swish = Swish()
         self.logsoftmax = nn.LogSoftmax()
+        self.dropout = nn.Dropout(p=0.5)
 
     def forward(self, inputs):
         batch_size = 1
+        device = 'cpu'
         for inp in inputs:
             if inp is not None:
-                batch_size = inp.size(0)
-                e = torch.zeros(batch_size, 1024)
-                e = e.to(inp.device)
+                batch_size = inp.shape[0]
+                device = inp.device
                 break
-
+        embeddings = []
         for inp, emb in zip(inputs, self.embedders):
             if inp is None:
-                continue
-            e += emb(inp)
+                embeddings.append(torch.zeros(batch_size, 512).to(device))
+            else:
+                embeddings.append(emb(inp))
 
-        h = self.swish(self.fc1(e))
-        h_latent = self.swish(self.fc_latent(h))
-        out = self.logsoftmax(self.out(h_latent))
-        return out, h_latent
+        embeddings = torch.cat(embeddings, dim=1)
+
+        h = self.swish(self.fc1(embeddings))
+        h2 = self.swish(self.fc_latent(h))
+        out = self.logsoftmax(self.out(self.dropout(h2)))
+        return out, h2
 
 
 class View(nn.Module):
@@ -326,13 +332,17 @@ class SeqMLP(nn.Module):
     @param n_latents: integer
                       number of latent dimensions
     """
-    def __init__(self, input_size, output_size, layers_sizes=[1024, 512], dropout_prob=0):
+    def __init__(self, input_size, output_sizes, layers_sizes=[512, 512], dropout_prob=0):
         super().__init__()
 
-        self.output_size = output_size
+        if not isinstance(output_sizes, list):
+            output_sizes = [output_sizes]
+
+        self.output_sizes = output_sizes
         self.layers_sizes = layers_sizes
         self.dropout_prob = dropout_prob
         self.layers = nn.ModuleList()
+        self.out_layers = nn.ModuleList()
         self.dropout = nn.Dropout(p=self.dropout_prob)
         self.layers.append(nn.Linear(input_size, self.layers_sizes[0]))
 
@@ -342,21 +352,26 @@ class SeqMLP(nn.Module):
             print(self.layers_sizes[count - 1], self.layers_sizes[count])
             self.layers.append(nn.Linear(self.layers_sizes[count - 1], self.layers_sizes[count]))
             count += 1
-        self.layers.append(nn.Linear(self.layers_sizes[-1], output_size))
+        for out_size in output_sizes:
+            self.out_layers.append(nn.Linear(self.layers_sizes[-1], out_size))
         self.swish = Swish()
-        self.to(self.device)
 
     def forward(self, input):
         if type(input) == list:
             input = torch.cat(input, dim=1)
         results = input
-        for i in range(len(self.layers) - 1):
+        for i in range(len(self.layers)):
             if i > 0:
                 results = self.dropout(results)
             results = self.swish(self.layers[i](results))
-        output = self.layers[-1](results)
+        outputs = []
+        for out_layer in self.out_layers:
+            outputs.append(out_layer(results))
 
-        return output
+        if len(outputs) > 1:
+            return tuple(outputs)
+        else:
+            return outputs[0]
 
 
 class RecurrentState(LSTMLayer):
@@ -381,3 +396,16 @@ class RecurrentState(LSTMLayer):
         self.hidden = self.dropout(self.hidden)
 
         return self.hidden
+
+
+class StandardNormalization(nn.Module):
+    def __init__(self, mean, std):
+        super(StandardNormalization, self).__init__()
+        self.mean = nn.Parameter(mean)
+        self.std = nn.Parameter(std)
+
+    def forward(self, input):
+        return (input - self.mean) / self.std
+
+    def scale_back(self, input):
+        return (input * self.std) + self.mean

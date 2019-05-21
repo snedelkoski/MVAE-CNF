@@ -24,23 +24,34 @@ def conv3x3(in_planes, out_planes, stride=1):
 class SeqMVAE(GenMVAE):
 
     def __init__(self, args, encoders, decoders, x_maps, z_map, prior, recurrents):
-        super().__init__(args, encoders, decoders)
+        super().__init__(args, [], [])
 
         self.input_feats = None
         self.z_feats = None
+
+        self.encoders = nn.ModuleList()
+        for enc in encoders:
+            self.encoders.append(enc)
+
+        self.decoders = nn.ModuleList()
+        for dec in decoders:
+            self.decoders.append(dec)
 
         self.x_maps = nn.ModuleList()
         for x_map in x_maps:
             self.x_maps.append(x_map)
 
-        self.prior = prior(args.hidden_size, args.z_size, layers_sizes=[args.hidden_size, args.hidden_size])
+        self.prior = prior
 
-        self.z_map = z_map(args.z_size, args.hidden_size, layers_sizes=[args.hidden_size, args.hidden_size])
+        self.z_map = z_map
+
         self.recurrents = nn.ModuleList()
         for rec in recurrents:
-            self.reccurents.append(rec(args.z_size, args.hidden_size, device=self.device))
+            if args.cuda:
+                rec.device = 'cuda:0'
+            self.recurrents.append(rec)
 
-        if args.cuda():
+        if args.cuda:
             self.cuda()
 
     def forward(self, inputs):
@@ -48,7 +59,7 @@ class SeqMVAE(GenMVAE):
         Forward pass with planar flows for the transformation z_0 -> z_1 -> ... -> z_k.
         Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
         """
-        z_mu, z_var = self.encode(inputs)
+        z_mu, z_var, p_mu, p_var = self.encode(inputs)
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
         # z0 = z0.to(z_mu)
@@ -56,21 +67,18 @@ class SeqMVAE(GenMVAE):
 
         self.update_hidden(x_feats, z_feats)
 
-        return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], )).to(z0), z0, None
+        return reconstructions, z_mu, z_var, p_mu, p_var, torch.zeros((z0.shape[0], )).to(z0), z0, None
 
     def encode(self, inputs):
         """
         Encoder that ouputs parameters for base distribution of z and flow parameters.
         """
 
-        mean_z, var_z = self.infer(inputs)
+        mean_z, var_z, p_mean, p_var = self.infer(inputs)
 
-        return mean_z, var_z
+        return mean_z, var_z, p_mean, p_var
 
-    def infer(self, inputs):
-
-        # initialize the universal prior expert
-
+    def get_prior(self):
         hidden_sum = torch.zeros(self.recurrents[0].hidden.shape).to(self.recurrents[0].hidden)
 
         for rec in self.recurrents:
@@ -78,11 +86,21 @@ class SeqMVAE(GenMVAE):
 
         mu, logvar = self.prior(hidden_sum)
 
-        for inp, enc, x_map, rec in zip(inputs, self.encoders, self.x_maps, self.recurrents):
+        return mu.unsqueeze(0), logvar.unsqueeze(0)
+
+    def infer(self, inputs):
+
+        # initialize the universal prior expert
+
+        mu, logvar = self.get_prior()
+        prior_mu = mu.squeeze()
+        prior_logvar = logvar.squeeze()
+        for inp, enc, x_map, rec in zip(inputs, self.encoders, self.x_maps,
+                                        self.recurrents):
             if inp is None:
                 continue
             inp_map = x_map(inp)
-            mean_z, var_z = enc(inp_map, rec.hidden)
+            mean_z, var_z = enc([inp_map, rec.hidden])
             mu = torch.cat((mu, mean_z.unsqueeze(0)), dim=0)
             logvar = torch.cat((logvar, var_z.unsqueeze(0)), dim=0)
 
@@ -90,7 +108,7 @@ class SeqMVAE(GenMVAE):
 
         mu, logvar = self.experts(mu, logvar)
 
-        return mu, logvar
+        return mu, logvar, prior_mu, prior_logvar
 
     def reparameterize(self, mu, var):
         """
@@ -110,16 +128,20 @@ class SeqMVAE(GenMVAE):
         """
 
         z_feats = self.z_map(z0)
-        reconstructions = []
+        recons = []
         for dec, rec in zip(self.decoders, self.recurrents):
-            reconstructions.append(dec(z_feats, rec.hidden))
+            recons.append(dec([z_feats, rec.hidden]))
 
         x_feats = []
-        for recon, x_map in zip(reconstructions, self.x_maps):
+        for recon, x_map in zip(recons, self.x_maps):
             x_feats.append(x_map(recon))
 
-        return reconstructions, x_feats, z_feats
+        return recons, x_feats, z_feats
 
     def update_hidden(self, x_feats, z_feats):
-        for rec, x_feat in zip(self.recurrents, self.x_maps):
-            rec(x_feat, z_feats)
+        for rec, x_feat in zip(self.recurrents, x_feats):
+            rec([x_feat, z_feats])
+
+    def init_states(self, batch_size):
+        for rec in self.recurrents:
+            rec.init_states(batch_size)
