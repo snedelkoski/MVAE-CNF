@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import random
-from code.vae_lib.optimization.loss import seq_elbo_loss, cross_entropy,\
+from code.vae_lib.optimization.loss import gen_elbo_loss, cross_entropy,\
     binary_cross_entropy_with_logits
 import os
 
@@ -30,6 +30,8 @@ import lib.layers.odefunc as odefunc
 
 # import code.vae_lib.models.CNFVAE as CNFVAE
 from code.vae_lib.models.GeneralCNFVAE import GenCNFVAE
+from code.vae_lib.models.MVAE import GenMVAE
+from code.vae_lib.models.model import LSTMEncoder, LSTMDecoder
 from code.vae_lib.models.train import load_checkpoint
 from code.vae_lib.models.seq_mvae import SeqMVAE
 from code.vae_lib.models.train import AverageMeter, save_checkpoint
@@ -103,9 +105,9 @@ parser.add_argument(
     help='Width of mades for iaf. Ignored for all other flows.'
 )
 parser.add_argument('--z_size', type=int, default=128, metavar='ZSIZE', help='how many stochastic hidden units')
+parser.add_argument('--hidden_size', type=int, default=256, metavar='HIDDENSIZE', help='how many units in the recurrent state')
 parser.add_argument('--cond_size', type=int, default=10, metavar='CONDSIZE', help='how many stochastic hidden units')
 parser.add_argument('--target_size', type=int, default=1, metavar='TARGETSIZE', help='how many stochastic hidden units')
-parser.add_argument('--hidden_size', type=int, default=256, metavar='HIDDENSIZE', help='how many units in the recurrent state')
 # gpu/cpu
 parser.add_argument('--gpu_num', type=int, default=0, metavar='GPU', help='choose GPU to run on.')
 
@@ -198,10 +200,10 @@ def run(args, kwargs):
         os.makedirs(snap_dir)
 
     # logger
-    # utils.makedirs(args.snap_dir)
-    #
-    # logger = utils.get_logger(logpath=os.path.join(args.snap_dir, 'logs'), filepath=os.path.abspath(__file__))
-    # logger.info(args)
+    utils.makedirs(args.snap_dir)
+
+    logger = utils.get_logger(logpath=os.path.join(args.snap_dir, 'logs'), filepath=os.path.abspath(__file__))
+    logger.info(args)
 
     # SAVING
     torch.save(args, snap_dir + args.flow + '.config')
@@ -233,6 +235,7 @@ def run(args, kwargs):
 
     condition_size = args.cond_size
     target_size = args.target_size
+
     train_loader = torch.utils.data.DataLoader(
         IAPDataset('../data/basf-iap/plant_c/', train=True, target_id=0), batch_size=args.batch_size, shuffle=True)
     N_mini_batches = len(train_loader)
@@ -245,40 +248,23 @@ def run(args, kwargs):
         # SELECT MODEL
         # ==============================================================================================================
         # flow parameters and architecture choice are passed on to model through args
-        encoders = [SeqMLP(2 * args.hidden_size, [args.z_size, args.z_size]),
-                    SeqMLP(2 * args.hidden_size, [args.z_size, args.z_size])]
-        decoders = [SeqMLP(2 * args.hidden_size, condition_size),
-                    SeqMLP(2 * args.hidden_size, target_size)]
-        x_maps = [SeqMLP(condition_size, args.hidden_size, layers_sizes=[args.hidden_size]),
-                  SeqMLP(target_size, args.hidden_size, layers_sizes=[args.hidden_size])]
+        encoders = [LSTMEncoder(condition_size, args.hidden_size, args.z_size),
+                    LSTMEncoder(target_size, args.hidden_size, args.z_size)]
+        decoders = [LSTMDecoder(args.z_size, args.hidden_size, condition_size),
+                    LSTMDecoder(args.z_size, args.hidden_size, target_size)]
 
-        z_map = SeqMLP(args.z_size, args.hidden_size,
-                       layers_sizes=[args.hidden_size])
+        def seq_MSE(pred, target):
+            loss = 0
+            for i in pred.shape[1]:
+                loss += torch.sum(F.mse_loss(pred, target, reduction='none'))
 
-        prior = SeqMLP(args.hidden_size, [args.z_size, args.z_size],
-                       layers_sizes=[args.hidden_size])
-        recurrents = [RecurrentState(2 * args.hidden_size, args.hidden_size),
-                      RecurrentState(2 * args.hidden_size, args.hidden_size)]
+            return loss
 
-        scalers = [StandardNormalization(condition_mean, condition_std),
-                   StandardNormalization(target_mean, target_std)]
-
-        if args.cuda:
-            for scaler in scalers:
-                scaler.cuda()
-
-        loss_func = F.mse_loss
+        loss_funcs = [seq_MSE, seq_MSE]
 
         # model = GenMVAE(args, encoders, decoders)
+        model = GenMVAE(args, encoders, decoders)
 
-        if args.model_path == '':
-            model = SeqMVAE(args, encoders, decoders, x_maps, z_map,
-                            prior, recurrents)
-        else:
-            print('LOADING MODEL FROM FILE')
-            model = load_checkpoint(args.model_path, SeqMVAE, use_cuda=args.cuda,
-                                    keys=['encoders', 'decoders', 'x_maps', 'z_map',
-                                          'prior', 'recurrents'])
         # if args.retrain_encoder:
         #     logger.info(f"Initializing decoder from {args.model_path}")
         #     dec_model = torch.load(args.model_path)
@@ -289,10 +275,10 @@ def run(args, kwargs):
         #     model.load_state_dict(dec_sd, strict=False)
 
         if args.cuda:
-            # logger.info("Model on GPU")
+            logger.info("Model on GPU")
             model.cuda()
 
-        # logger.info(model)
+        logger.info(model)
 
         # if args.retrain_encoder:
         #     parameters = []
@@ -306,7 +292,6 @@ def run(args, kwargs):
 
         # optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
         optimizer = optim.Adam(parameters, args.learning_rate)
-        lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.2, patience=10)
 
         # ==================================================================================================================
         # TRAINING AND EVALUATION
@@ -328,7 +313,7 @@ def run(args, kwargs):
                 binary_selections.append(selection)
 
             # NOTE: is_paired is 1 if the example is paired
-            for batch_idx, (condition, target, length) in enumerate(train_loader):
+            for batch_idx, (cond, target) in enumerate(train_loader):
                 if epoch < args.annealing_epochs:
                     # compute the KL annealing factor for the current mini-batch in the current epoch
                     annealing_factor = (float(batch_idx + (epoch - 1) * N_mini_batches + 1) /
@@ -338,86 +323,53 @@ def run(args, kwargs):
                     annealing_factor = 1.0
 
                 if args.cuda:
-                    condition = condition.cuda()
+                    cond = cond.cuda()
                     target = target.cuda()
-                    length = length.type(torch.DoubleTensor)
-                    length = length.cuda()
 
-                batch_size = len(condition)
+                batch_size = len(cond)
 
                 # refresh the optimizer
                 optimizer.zero_grad()
 
                 # pass data through model
-                # print('condition shape', condition.shape)
-                # print('target shape', target.shape)
-                # print('lengths shape', length.shape)
-                # print('scaler_mean', model.scalers[0].mean)
-                # print('scaler_std', model.scalers[0].std)
 
                 train_loss = 0
-                inputs_tmp = [condition, target]
-                total_length = condition.shape[1]
-                batch_size = condition.shape[0]
-
-                inputs = [scaler(inp) for scaler, inp in zip(scalers, inputs_tmp)]
-
+                inputs = [cond, target]
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
-
-                        seq_inputs = transform_to_sequence(sel_inputs, total_length)
-                        model.init_states(batch_size)
-
-                        sel_loss = 0
-                        for i in range(total_length):
-                            # print('seq_inputs mean', seq_inputs[i][0].mean())
-                            # print('seq_inputs std', seq_inputs[i][0].std())
-                            recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
-                            seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
-                                                               args, lambda_weights=torch.DoubleTensor([1, 1]),
-                                                               annealing_factor=annealing_factor, beta=beta)
-                            # print('loss shape', seq_loss.shape)
-                            # print('loss', seq_loss)
-                            loss_mask = i < length
-                            loss_mask = loss_mask.type(torch.DoubleTensor).squeeze()
-                            loss_mask = loss_mask.to(seq_loss)
-                            # print('loss_mask', loss_mask)
-                            # print('loss * mask', seq_loss * loss_mask)
-                            # print('loss after mask:', torch.sum((seq_loss * loss_mask) / length.squeeze()))
-                            sel_loss += torch.sum((seq_loss * loss_mask) / length.squeeze())
+                        # print(sel_inputs)
+                        recs, mu, logvar, logj, z0, zk = model(sel_inputs)
+                        sel_loss, recs, kl = gen_elbo_loss(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk, logj,
+                                                           args, lambda_weights=torch.DoubleTensor([1, 10]),
+                                                           annealing_factor=annealing_factor, beta=beta)
                         train_loss += sel_loss
 
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
                 train_loss.backward()
-                # print('encoders grad:\n')
-                # for enc in model.encoders:
-                #     for name, p in enc.named_parameters():
-                #         print(name, p.grad)
-                #         # break
-                #     break
+                print('encoders grad:\n')
+                for enc in model.encoders:
+                    for name, p in enc.named_parameters():
+                        print(name, p.grad)
+                        # break
+                    break
 
                 # model.freeze_params(False, True, False)
-                # print('decoders grad:\n')
-                # for dec in model.decoders:
-                #     for name, p in dec.named_parameters():
-                #         print(name, p.grad)
-                #         # break
-                #     break
-                torch.nn.utils.clip_grad_value_(model.parameters(), 1)
+                print('decoders grad:\n')
+                for dec in model.decoders:
+                    for name, p in dec.named_parameters():
+                        print(name, p.grad)
+                        # break
+                    break
                 optimizer.step()
 
                 if batch_idx % args.log_interval == 0:
                     print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
-                          epoch, batch_idx * len(length), len(train_loader.dataset),
+                          epoch, batch_idx * len(image), len(train_loader.dataset),
                           100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
 
-            if epoch > 20:
-                lr_scheduler.step(train_loss_meter.avg)
-
             print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
-
             return train_loss_meter.avg
 
         def test(epoch):
@@ -437,56 +389,24 @@ def run(args, kwargs):
                 binary_selections.append(selection)
 
             override_divergence_fn(model, "brute_force")
-            for batch_idx, (condition, target, length) in enumerate(test_loader):
+            for batch_idx, (image, text) in enumerate(test_loader):
 
                 if args.cuda:
-                    condition = condition.cuda()
-                    target = target.cuda()
-                    length = length.type(torch.DoubleTensor)
-                    length = length.cuda()
-
-                batch_size = len(condition)
-
-                # refresh the optimizer
-                optimizer.zero_grad()
-
-                # pass data through model
-                # print('condition shape', condition.shape)
-                # print('target shape', target.shape)
-                # print('lengths shape', length.shape)
-                # print('scaler_mean', model.scalers[0].mean)
-                # print('scaler_std', model.scalers[0].std)
+                    image = image.cuda()
+                    text = text.cuda()
+                image = Variable(image, volatile=True)
+                text = Variable(text, volatile=True)
+                batch_size = len(image)
 
                 test_loss = 0
-                inputs_tmp = [condition, target]
-                total_length = condition.shape[1]
-                batch_size = condition.shape[0]
-
-                inputs = [scaler(inp) for scaler, inp in zip(scalers, inputs_tmp)]
+                inputs = [image, text]
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
-
-                        # print(sel_inputs)
-                        seq_inputs = transform_to_sequence(sel_inputs, total_length)
-                        model.init_states(batch_size)
-
-                        sel_loss = 0
-                        for i in range(total_length):
-                            # print('seq_inputs', seq_inputs[0])
-                            recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
-                            seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
-                                                               args, lambda_weights=torch.DoubleTensor([1, 1]),
-                                                               )
-                            # print('loss shape', seq_loss.shape)
-                            # print('loss', seq_loss)
-                            loss_mask = i < length
-                            loss_mask = loss_mask.type(torch.DoubleTensor).squeeze()
-                            loss_mask = loss_mask.to(seq_loss)
-                            # print('loss_mask', loss_mask)
-                            # print('loss * mask', seq_loss * loss_mask)
-                            # print('loss after mask:', torch.sum((seq_loss * loss_mask) / length.squeeze()))
-                            sel_loss += torch.sum((seq_loss * loss_mask) / length.squeeze())
+                        recs, mu, logvar, logj, z0, zk = model(sel_inputs)
+                        print('logj shape', logj.shape)
+                        sel_loss, recs, kl = gen_elbo_loss(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk, logj,
+                                                           args, lambda_weights=torch.DoubleTensor([1, 10]))
                         test_loss += sel_loss
 
                 test_loss_meter.update(test_loss.item(), batch_size)
@@ -495,12 +415,13 @@ def run(args, kwargs):
             return test_loss_meter.avg
 
         best_loss = sys.maxsize
-        for epoch in range(args.start_epoch, args.epochs + 1):
+        for epoch in range(1, args.epochs + 1):
             train_loss = train(epoch)
             # print ("Test")
             test_loss = test(epoch)
             is_best = test_loss < best_loss
             best_loss = min(test_loss, best_loss)
+            # save the best model and current model
             save_checkpoint({
                 'state_dict': model.state_dict(),
                 'args': args,
@@ -516,7 +437,7 @@ def run(args, kwargs):
                 'test_loss': test_loss,
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
-            }, is_best, folder='./trained_ts_models', filename='model_best')
+            }, is_best, folder='./trained_simple_ts_models', filename='model_best_s')
             if (epoch - 1) % 10 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
@@ -533,7 +454,7 @@ def run(args, kwargs):
                     'test_loss': test_loss,
                     'n_latents': args.z_size,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, folder='./trained_ts_models', filename='checkpoint_' + str(epoch - 1) + '.pth.tar')
+                }, is_best, folder='./trained_simple_ts_models', filename='checkpoint_s_' + str(epoch - 1) + '.pth.tar')
 
 
 if __name__ == "__main__":

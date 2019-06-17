@@ -28,10 +28,10 @@ class GenMVAE(VAE):
         # CNF model
         self.encoders = nn.ModuleList()
         for enc in encoders:
-            self.encoders.append(enc(args.z_size))
+            self.encoders.append(enc)
         self.decoders = nn.ModuleList()
         for dec in decoders:
-            self.decoders.append(dec(args.z_size))
+            self.decoders.append(dec)
         self.z_size = args.z_size
         if args.cuda:
             self.cuda()

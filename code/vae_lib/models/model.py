@@ -307,25 +307,57 @@ class View(nn.Module):
         return x.view(*self.shape)
 
 
-# class LSTMEncoder(nn.Module):
-#     """Parametrizes p(x|z).
-#
-#     @param n_latents: integer
-#                       number of latent dimensions
-#     """
-#     def __init__(self, input_size, hidden_size, n_latents):
-#         super().__init__()
-#         lstm = LSTMLayer(input_size, hidden_size, 1)
-#         self.out1 = nn.Linear(hidden_size, n_latents)
-#         self.out2 = nn.Linear(hidden_size, n_latents)
-#         self.swish = Swish()
-#
-#     def forward(self, z):
-#         h = self.swish(self.fc1(z))
-#         h = self.swish(self.fc2(h))
-#         h = self.swish(self.fc3(h))
-#         return self.fc4(h)  # NOTE: no sigmoid here. See train.py
-#
+class LSTMEncoder(nn.Module):
+    """Parametrizes p(x|z).
+
+    @param n_latents: integer
+                      number of latent dimensions
+    """
+    def __init__(self, input_size, hidden_size, n_latents):
+        super().__init__()
+        self.lstm = LSTMLayer(input_size, hidden_size, 1)
+        self.out1 = nn.Linear(hidden_size, n_latents)
+        self.out2 = nn.Linear(hidden_size, n_latents)
+        self.swish = Swish()
+
+    def forward(self, inp, lengths=None):
+        self.lstm.init_states(inp.shape[0])
+        hidden_states = torch.zeros((inp.shape[0], self.lstm.hidden_size)).to(inp)
+        min_len = torch.min(lengths)
+        for i in range(inp.shape[1]):
+            self.lstm(inp)
+            if lengths is not None and i >= min_len:
+                idx = torch.where(lengths == i, torch.ones(lengths.shape), torch.zeros(lengths.shape))
+                if torch.sum(idx) > 0:
+                    hidden_states[idx] = self.lstm.hidden[idx]
+
+        out_1 = self.swish(self.out1(hidden_states))
+        out_2 = self.swish(self.out2(hidden_states))
+        return out_1, out_2  # NOTE: no sigmoid here. See train.py
+
+
+class LSTMDecoder(nn.Module):
+    """Parametrizes p(x|z).
+
+    @param n_latents: integer
+                      number of latent dimensions
+    """
+    def __init__(self, input_size, hidden_size, output_size):
+        super().__init__()
+        self.output_size = output_size
+        self.lstm = LSTMLayer(output_size, hidden_size, output_size)
+
+    def forward(self, hidden_states, length=120):
+        self.lstm.init_states(hidden_states.shape[0])
+        self.lstm.hidden = hidden_states
+        inp = torch.zeros((hidden_states.shape[0], self.output_size))
+        outputs = torch.zeros((hidden_states.shape[0], length, self.output_size))
+        for i in range(length):
+            inp = self.lstm(inp)
+            outputs[:, i, :] = inp
+        return outputs
+
+
 class SeqMLP(nn.Module):
     """Parametrizes p(x|z).
 
