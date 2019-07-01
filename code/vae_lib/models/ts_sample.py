@@ -20,7 +20,7 @@ from code.vae_lib.models.train import load_checkpoint
 from code.vae_lib.models.train_misc import override_divergence_fn
 
 
-def fetch_ts_sample():
+def fetch_ts_sample(datadir, suffix, target_id):
     """Return a random image from the MNIST dataset with label.
 
     @param label: integer
@@ -28,8 +28,8 @@ def fetch_ts_sample():
     @return: torch.autograd.Variable
              MNIST image
     """
-    ts_dataset = IAPDataset('/home/MihailBogojeski/git/multimodaldiffeq/data/basf-iap/synthetic/',
-                            train=False, target_id=0)
+    ts_dataset = IAPDataset(datadir,
+                            suffix=suffix, train=False, target_id=target_id)
     condition, target, length = ts_dataset[np.random.randint(len(ts_dataset))]
     return condition, target, length
 
@@ -54,6 +54,10 @@ if __name__ == "__main__":
     import os
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        '-d', '--dataset', type=str, default='synthetic', choices=['synthetic', 'plant_c'],
+        metavar='DATASET', help='Dataset choice.'
+    )
     parser.add_argument('--model_path', type=str, default='../../trained_models/checkpoint.pth.tar', help='path to trained model file')
     parser.add_argument('--n_samples', type=int, default=4,
                         help='Number of images and texts to sample [default: 4]')
@@ -63,16 +67,33 @@ if __name__ == "__main__":
     parser.add_argument('--condition-on-conditions', type=int, default=None,
                         help='If True, generate text conditioned on an image.')
     # condition sampling on a particular text
-    parser.add_argument('--condition-on-targets', type=int, default=None, 
+    parser.add_argument('--condition-on-targets', type=int, default=None,
                         help='If True, generate images conditioned on a text.')
     parser.add_argument('--cuda', action='store_true', default=True,
                         help='enables CUDA training')
+    parser.add_argument('--length_std', type=float, default=0,
+                        help='variance of random lengths')
     args = parser.parse_args()
     args.cuda = args.cuda and torch.cuda.is_available()
 
-    X_train = np.load('/home/MihailBogojeski/git/multimodaldiffeq/data/basf-iap/synthetic/X_train.npy')
-    Y_train = np.load('/home/MihailBogojeski/git/multimodaldiffeq/data/basf-iap/synthetic/Y_train.npy')
-    Y_train = Y_train[:, 0:1]
+    if args.dataset == 'synthetic':
+        X_train = np.load('../../../data/basf-iap/synthetic/X_train_smooth.npy')
+        Y_train = np.load('../../../data/basf-iap/synthetic/Y_train_smooth.npy')
+        target_id = 4
+        Y_train = Y_train[:, target_id:target_id + 1]
+        datadir = '../../../data/basf-iap/synthetic/'
+        suffix = 'smooth'
+        condition_size = 6
+        target_size = 1
+    if args.dataset == 'plant_c':
+        X_train = np.load('../../../data/basf-iap/plant_c/X_train.npy')
+        Y_train = np.load('../../../data/basf-iap/plant_c/Y_train.npy')
+        target_id = 0
+        Y_train = Y_train[:, target_id:target_id + 1]
+        datadir = '../../../data/basf-iap/plant_c/'
+        suffix = None
+        condition_size = 10
+        target_size = 1
 
     condition_mean = np.mean(X_train, axis=0)
     condition_std = np.std(X_train, axis=0)
@@ -104,12 +125,14 @@ if __name__ == "__main__":
 
         # mode 1: unconditional generation
         if not args.condition_on_conditions and not args.condition_on_targets:
-            total_length = args.length
-            input_length = args.length
+            rand = np.random.randn()
+            total_length = args.length + int(rand * args.length_std)
+            input_length = args.length + int(rand * args.length_std)
             inputs = [None, None]
+            model.train()
         # mode 2: generate conditioned on image
         elif args.condition_on_conditions and not args.condition_on_targets:
-            condition, _, length = fetch_ts_sample()
+            condition, _, length = fetch_ts_sample(datadir, suffix, target_id)
             condition_list.append(condition.numpy())
             if args.cuda:
                 condition = condition.cuda()
@@ -117,18 +140,21 @@ if __name__ == "__main__":
             print('length', length)
             input_length = int(length.squeeze())
             total_length = condition.shape[0]
-            inputs = [condition.unsqueeze(0), None]
+            print('unsqueeze shape', condition.unsqueeze(0).shape)
+            inputs = [scalers[0](condition.unsqueeze(0)), None]
         # mode 3: generate conditioned on text
         elif args.condition_on_targets and not args.condition_on_conditions:
-            _, target, length = fetch_ts_sample()
+            _, target, length = fetch_ts_sample(datadir, suffix, target_id)
             target_list.append(target.numpy())
             if args.cuda:
                 target = target.cuda()
             input_length = int(length.squeeze())
             total_length = target.shape[0]
-            inputs = [None, target.unsqueeze(0)]
+            # print('input length', input_length)
+            # print('total length', total_length)
+            inputs = [None, scalers[1](target.unsqueeze(0))]
         elif args.condition_on_conditions and args.condition_on_targets:
-            condition, target, length = fetch_ts_sample()
+            condition, target, length = fetch_ts_sample(datadir, suffix, target_id)
             condition_list.append(condition.numpy())
             target_list.append(target.numpy())
             if args.cuda:
@@ -136,7 +162,7 @@ if __name__ == "__main__":
                 target = target.cuda()
             input_length = int(length.squeeze())
             total_length = target.shape[0]
-            inputs = [condition.unsqueeze(0), target.unsqueeze(0)]
+            inputs = [scalers[0](condition.unsqueeze(0)), scalers[1](target.unsqueeze(0))]
         # sample from uniform gaussian
         print(inputs)
         seq_inputs = transform_to_sequence(inputs, total_length)
@@ -157,8 +183,6 @@ if __name__ == "__main__":
         print('condition size', recon_condition.shape)
         print('target size', recon_target.shape)
         sample_list.append(np.concatenate((recon_condition, recon_target), axis=1))
-
-        # save image samples to filesystem
 
     np.save('ts_sample.npy', sample_list)
     if args.condition_on_targets:

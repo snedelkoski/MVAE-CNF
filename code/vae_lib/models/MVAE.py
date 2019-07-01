@@ -36,33 +36,36 @@ class GenMVAE(VAE):
         if args.cuda:
             self.cuda()
 
-    def forward(self, inputs):
+    def forward(self, inputs, lengths=None):
         """
         Forward pass with planar flows for the transformation z_0 -> z_1 -> ... -> z_k.
         Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
         """
-        z_mu, z_var = self.encode(inputs)
+        z_mu, z_var = self.encode(inputs, lengths)
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
         # z0 = z0.to(z_mu)
         reconstructions = []
 
         for dec in self.decoders:
-            reconstructions.append(dec(z0))
+            if lengths is None:
+                reconstructions.append(dec(z0))
+            else:
+                reconstructions.append(dec(z0, length=max(lengths)))
         print('z0 shape', z0.shape)
 
         return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], )).to(z0), z0, None
 
-    def encode(self, inputs):
+    def encode(self, inputs, lengths=None):
         """
         Encoder that ouputs parameters for base distribution of z and flow parameters.
         """
 
-        mean_z, var_z = self.infer(inputs)
+        mean_z, var_z = self.infer(inputs, lengths)
 
         return mean_z, var_z
 
-    def infer(self, inputs):
+    def infer(self, inputs, lengths=None):
 
         batch_size = 1
         for inp in inputs:
@@ -77,7 +80,10 @@ class GenMVAE(VAE):
         for inp, enc in zip(inputs, self.encoders):
             if inp is None:
                 continue
-            mean_z, var_z = enc(inp)
+            if lengths is None:
+                mean_z, var_z = enc(inp)
+            else:
+                mean_z, var_z = enc(inp, lengths)
             mu = torch.cat((mu, mean_z.unsqueeze(0)), dim=0)
             logvar = torch.cat((logvar, var_z.unsqueeze(0)), dim=0)
 

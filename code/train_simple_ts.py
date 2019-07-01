@@ -42,7 +42,7 @@ SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed
 parser = argparse.ArgumentParser(description='PyTorch Sylvester Normalizing flows')
 
 parser.add_argument(
-    '-d', '--dataset', type=str, default='mnist', choices=['mnist', 'freyfaces', 'omniglot', 'caltech'],
+    '-d', '--dataset', type=str, default='synthetic', choices=['synthetic', 'plant_c'],
     metavar='DATASET', help='Dataset choice.'
 )
 
@@ -106,8 +106,6 @@ parser.add_argument(
 )
 parser.add_argument('--z_size', type=int, default=128, metavar='ZSIZE', help='how many stochastic hidden units')
 parser.add_argument('--hidden_size', type=int, default=256, metavar='HIDDENSIZE', help='how many units in the recurrent state')
-parser.add_argument('--cond_size', type=int, default=10, metavar='CONDSIZE', help='how many stochastic hidden units')
-parser.add_argument('--target_size', type=int, default=1, metavar='TARGETSIZE', help='how many stochastic hidden units')
 # gpu/cpu
 parser.add_argument('--gpu_num', type=int, default=0, metavar='GPU', help='choose GPU to run on.')
 
@@ -216,10 +214,24 @@ def run(args, kwargs):
     args.input_size = [1, 28, 28]
     args.input_type = 'binary'
 
-    X_train = np.load('../data/basf-iap/plant_c/X_train.npy')
-    Y_train = np.load('../data/basf-iap/plant_c/Y_train.npy')
-    Y_train = Y_train[:, 0:1]
-    # Y_train = Y_train[:, 4:5]
+    if args.dataset == 'synthetic':
+        X_train = np.load('../data/basf-iap/synthetic/X_train_smooth.npy')
+        Y_train = np.load('../data/basf-iap/synthetic/Y_train_smooth.npy')
+        target_id = 4
+        Y_train = Y_train[:, target_id:target_id + 1]
+        datadir = '../data/basf-iap/synthetic/'
+        suffix = 'smooth'
+        condition_size = 6
+        target_size = 1
+    if args.dataset == 'plant_c':
+        X_train = np.load('../data/basf-iap/plant_c/X_train.npy')
+        Y_train = np.load('../data/basf-iap/plant_c/Y_train.npy')
+        target_id = 0
+        Y_train = Y_train[:, target_id:target_id + 1]
+        datadir = '../data/basf-iap/plant_c/'
+        suffix = None
+        condition_size = 10
+        target_size = 1
 
     condition_mean = np.mean(X_train, axis=0)
     condition_std = np.std(X_train, axis=0)
@@ -233,14 +245,11 @@ def run(args, kwargs):
     print('x mean', condition_mean)
     print('y mean', target_mean)
 
-    condition_size = args.cond_size
-    target_size = args.target_size
-
     train_loader = torch.utils.data.DataLoader(
-        IAPDataset('../data/basf-iap/plant_c/', train=True, target_id=0), batch_size=args.batch_size, shuffle=True)
+        IAPDataset(datadir, suffix=suffix, train=True, target_id=target_id), batch_size=args.batch_size, shuffle=True)
     N_mini_batches = len(train_loader)
     test_loader = torch.utils.data.DataLoader(
-        IAPDataset('../data/basf-iap/plant_c/', train=False, target_id=0), batch_size=args.batch_size, shuffle=False)
+        IAPDataset(datadir, suffix=suffix, train=False, target_id=target_id), batch_size=args.batch_size, shuffle=False)
 
     if not args.evaluate:
 
@@ -292,6 +301,7 @@ def run(args, kwargs):
 
         # optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
         optimizer = optim.Adam(parameters, args.learning_rate)
+        lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.2, patience=10)
 
         # ==================================================================================================================
         # TRAINING AND EVALUATION
@@ -313,7 +323,7 @@ def run(args, kwargs):
                 binary_selections.append(selection)
 
             # NOTE: is_paired is 1 if the example is paired
-            for batch_idx, (cond, target) in enumerate(train_loader):
+            for batch_idx, (cond, target, length) in enumerate(train_loader):
                 if epoch < args.annealing_epochs:
                     # compute the KL annealing factor for the current mini-batch in the current epoch
                     annealing_factor = (float(batch_idx + (epoch - 1) * N_mini_batches + 1) /
@@ -325,6 +335,8 @@ def run(args, kwargs):
                 if args.cuda:
                     cond = cond.cuda()
                     target = target.cuda()
+                    length = length.type(torch.DoubleTensor)
+                    length = length.cuda()
 
                 batch_size = len(cond)
 
@@ -338,8 +350,8 @@ def run(args, kwargs):
                 # compute ELBO for each data combo
                 for sel in binary_selections:
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
-                        # print(sel_inputs)
-                        recs, mu, logvar, logj, z0, zk = model(sel_inputs)
+                        print(sel_inputs)
+                        recs, mu, logvar, logj, z0, zk = model(sel_inputs, length)
                         sel_loss, recs, kl = gen_elbo_loss(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk, logj,
                                                            args, lambda_weights=torch.DoubleTensor([1, 10]),
                                                            annealing_factor=annealing_factor, beta=beta)
@@ -366,9 +378,11 @@ def run(args, kwargs):
 
                 if batch_idx % args.log_interval == 0:
                     print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
-                          epoch, batch_idx * len(image), len(train_loader.dataset),
+                          epoch, batch_idx * len(length), len(train_loader.dataset),
                           100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
 
+            if epoch > 20:
+                lr_scheduler.step(train_loss_meter.avg)
             print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
             return train_loss_meter.avg
 
@@ -427,11 +441,6 @@ def run(args, kwargs):
                 'args': args,
                 'encoders': encoders,
                 'decoders': decoders,
-                'x_maps': x_maps,
-                'z_map': z_map,
-                'prior': prior,
-                'recurrents': recurrents,
-                'scalers': scalers,
                 'train_loss': train_loss,
                 'best_loss': best_loss,
                 'test_loss': test_loss,
@@ -444,11 +453,6 @@ def run(args, kwargs):
                     'args': args,
                     'encoders': encoders,
                     'decoders': decoders,
-                    'x_maps': x_maps,
-                    'z_map': z_map,
-                    'prior': prior,
-                    'recurrents': recurrents,
-                    'scalers': scalers,
                     'train_loss': train_loss,
                     'best_loss': best_loss,
                     'test_loss': test_loss,

@@ -40,7 +40,7 @@ SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed
 parser = argparse.ArgumentParser(description='PyTorch Sylvester Normalizing flows')
 
 parser.add_argument(
-    '-d', '--dataset', type=str, default='mnist', choices=['mnist', 'freyfaces', 'omniglot', 'caltech'],
+    '-d', '--dataset', type=str, default='synthetic', choices=['synthetic', 'plant_c'],
     metavar='DATASET', help='Dataset choice.'
 )
 
@@ -103,8 +103,6 @@ parser.add_argument(
     help='Width of mades for iaf. Ignored for all other flows.'
 )
 parser.add_argument('--z_size', type=int, default=128, metavar='ZSIZE', help='how many stochastic hidden units')
-parser.add_argument('--cond_size', type=int, default=10, metavar='CONDSIZE', help='how many stochastic hidden units')
-parser.add_argument('--target_size', type=int, default=1, metavar='TARGETSIZE', help='how many stochastic hidden units')
 parser.add_argument('--hidden_size', type=int, default=256, metavar='HIDDENSIZE', help='how many units in the recurrent state')
 # gpu/cpu
 parser.add_argument('--gpu_num', type=int, default=0, metavar='GPU', help='choose GPU to run on.')
@@ -214,10 +212,24 @@ def run(args, kwargs):
     args.input_size = [1, 28, 28]
     args.input_type = 'binary'
 
-    X_train = np.load('../data/basf-iap/plant_c/X_train.npy')
-    Y_train = np.load('../data/basf-iap/plant_c/Y_train.npy')
-    Y_train = Y_train[:, 0:1]
-    # Y_train = Y_train[:, 4:5]
+    if args.dataset == 'synthetic':
+        X_train = np.load('../data/basf-iap/synthetic/X_train_smooth.npy')
+        Y_train = np.load('../data/basf-iap/synthetic/Y_train_smooth.npy')
+        target_id = 4
+        Y_train = Y_train[:, target_id:target_id + 1]
+        datadir = '../data/basf-iap/synthetic/'
+        suffix = 'smooth'
+        condition_size = 6
+        target_size = 1
+    if args.dataset == 'plant_c':
+        X_train = np.load('../data/basf-iap/plant_c/X_train.npy')
+        Y_train = np.load('../data/basf-iap/plant_c/Y_train.npy')
+        target_id = 0
+        Y_train = Y_train[:, target_id:target_id + 1]
+        datadir = '../data/basf-iap/plant_c/'
+        suffix = None
+        condition_size = 10
+        target_size = 1
 
     condition_mean = np.mean(X_train, axis=0)
     condition_std = np.std(X_train, axis=0)
@@ -231,14 +243,11 @@ def run(args, kwargs):
     print('x mean', condition_mean)
     print('y mean', target_mean)
 
-    condition_size = args.cond_size
-    target_size = args.target_size
     train_loader = torch.utils.data.DataLoader(
-        IAPDataset('../data/basf-iap/plant_c/', train=True, target_id=0), batch_size=args.batch_size, shuffle=True)
+        IAPDataset(datadir, suffix=suffix, train=True, target_id=target_id), batch_size=args.batch_size, shuffle=True)
     N_mini_batches = len(train_loader)
     test_loader = torch.utils.data.DataLoader(
-        IAPDataset('../data/basf-iap/plant_c/', train=False, target_id=0), batch_size=args.batch_size, shuffle=False)
-
+        IAPDataset(datadir, suffix=suffix, train=False, target_id=target_id), batch_size=args.batch_size, shuffle=False)
     if not args.evaluate:
 
         # ==============================================================================================================
@@ -516,7 +525,7 @@ def run(args, kwargs):
                 'test_loss': test_loss,
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
-            }, is_best, folder='./trained_ts_models', filename='model_best')
+            }, is_best, folder='./trained_ts_models', filename='model_best_s.pth.tar')
             if (epoch - 1) % 10 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
@@ -533,7 +542,7 @@ def run(args, kwargs):
                     'test_loss': test_loss,
                     'n_latents': args.z_size,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, folder='./trained_ts_models', filename='checkpoint_' + str(epoch - 1) + '.pth.tar')
+                }, is_best, folder='./trained_ts_models', filename='checkpoint_s' + str(epoch - 1) + '.pth.tar')
 
 
 if __name__ == "__main__":

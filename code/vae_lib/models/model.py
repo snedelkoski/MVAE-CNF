@@ -325,9 +325,14 @@ class LSTMEncoder(nn.Module):
         hidden_states = torch.zeros((inp.shape[0], self.lstm.hidden_size)).to(inp)
         min_len = torch.min(lengths)
         for i in range(inp.shape[1]):
-            self.lstm(inp)
+            self.lstm(inp[:, i, :])
+            print('step', i)
             if lengths is not None and i >= min_len:
-                idx = torch.where(lengths == i, torch.ones(lengths.shape), torch.zeros(lengths.shape))
+                print(lengths.type())
+                idx = torch.where(lengths.cpu() == i, torch.ones(lengths.shape, dtype=torch.uint8), torch.zeros(lengths.shape, dtype=torch.uint8))
+                idx = idx.squeeze()
+                print(lengths)
+                print(idx.shape)
                 if torch.sum(idx) > 0:
                     hidden_states[idx] = self.lstm.hidden[idx]
 

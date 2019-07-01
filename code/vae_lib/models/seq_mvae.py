@@ -60,6 +60,7 @@ class SeqMVAE(GenMVAE):
         Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
         """
         z_mu, z_var, p_mu, p_var = self.encode(inputs)
+
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
         # z0 = z0.to(z_mu)
