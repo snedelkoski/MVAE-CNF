@@ -48,11 +48,8 @@ class SeqMVAE(GenMVAE):
         self.recurrents = nn.ModuleList()
         for rec in recurrents:
             if args.cuda:
-                rec.device = 'cuda:0'
+                rec.device = args.gpu_num
             self.recurrents.append(rec)
-
-        if args.cuda:
-            self.cuda()
 
     def forward(self, inputs):
         """
@@ -146,3 +143,32 @@ class SeqMVAE(GenMVAE):
     def init_states(self, batch_size):
         for rec in self.recurrents:
             rec.init_states(batch_size)
+
+
+class CNFSeqMVAE(SeqMVAE):
+
+    def __init__(self, args, encoders, decoders, x_maps, z_map, prior, recurrents):
+        super().__init__(args, encoders, decoders, x_maps, z_map, prior, recurrents)
+
+        self.cnf = build_model_tabular(args, args.z_size)
+        if args.cuda:
+            self.cuda()
+
+    def forward(self, inputs):
+        """
+        Forward pass with planar flows for the transformation z_0 -> z_1 -> ... -> z_k.
+        Log determinant is computed as log_det_j = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ].
+        """
+        z_mu, z_var, p_mu, p_var = self.encode(inputs)
+
+        # Sample z_0
+        z0 = self.reparameterize(z_mu, z_var)
+        # z0 = z0.to(z_mu)
+        zero = torch.zeros(z0.shape[0], 1).to(z0)
+        zk, delta_logp = self.cnf(z0, zero)  # run model forward
+
+        reconstructions, x_feats, z_feats = self.decode(zk)
+
+        self.update_hidden(x_feats, z_feats)
+
+        return reconstructions, z_mu, z_var, p_mu, p_var, -delta_logp.view(-1), z0, zk

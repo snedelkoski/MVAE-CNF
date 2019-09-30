@@ -122,6 +122,7 @@ if __name__ == "__main__":
     target_list = []
     for i in range(args.n_samples):
         model.init_states(1)
+        model.train()
 
         # mode 1: unconditional generation
         if not args.condition_on_conditions and not args.condition_on_targets:
@@ -129,7 +130,6 @@ if __name__ == "__main__":
             total_length = args.length + int(rand * args.length_std)
             input_length = args.length + int(rand * args.length_std)
             inputs = [None, None]
-            model.train()
         # mode 2: generate conditioned on image
         elif args.condition_on_conditions and not args.condition_on_targets:
             condition, _, length = fetch_ts_sample(datadir, suffix, target_id)
@@ -146,6 +146,7 @@ if __name__ == "__main__":
         elif args.condition_on_targets and not args.condition_on_conditions:
             _, target, length = fetch_ts_sample(datadir, suffix, target_id)
             target_list.append(target.numpy())
+            print('nonzero values', np.sum(target.numpy()>0))
             if args.cuda:
                 target = target.cuda()
             input_length = int(length.squeeze())
@@ -157,6 +158,7 @@ if __name__ == "__main__":
             condition, target, length = fetch_ts_sample(datadir, suffix, target_id)
             condition_list.append(condition.numpy())
             target_list.append(target.numpy())
+            print('nonzero values', np.sum(target.numpy()>0))
             if args.cuda:
                 condition = condition.cuda()
                 target = target.cuda()
@@ -164,7 +166,6 @@ if __name__ == "__main__":
             total_length = target.shape[0]
             inputs = [scalers[0](condition.unsqueeze(0)), scalers[1](target.unsqueeze(0))]
         # sample from uniform gaussian
-        print(inputs)
         seq_inputs = transform_to_sequence(inputs, total_length)
 
         recon_condition = None
@@ -182,10 +183,15 @@ if __name__ == "__main__":
         recon_target = recon_target.cpu().detach().numpy()
         print('condition size', recon_condition.shape)
         print('target size', recon_target.shape)
+        print('input length', input_length)
+
         sample_list.append(np.concatenate((recon_condition, recon_target), axis=1))
 
     np.save('ts_sample.npy', sample_list)
+    print(list(map(len, sample_list)))
     if args.condition_on_targets:
         np.save('ts_target.npy', target_list)
+        print([np.sum(target_list[i] > 0) for i in range(len(target_list))])
     if args.condition_on_conditions:
         np.save('ts_cond.npy', condition_list)
+        print([np.sum(condition_list[i] != 0) for i in range(len(condition_list))])

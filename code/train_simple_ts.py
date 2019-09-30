@@ -262,12 +262,31 @@ def run(args, kwargs):
         decoders = [LSTMDecoder(args.z_size, args.hidden_size, condition_size),
                     LSTMDecoder(args.z_size, args.hidden_size, target_size)]
 
-        def seq_MSE(pred, target):
-            loss = 0
-            for i in pred.shape[1]:
-                loss += torch.sum(F.mse_loss(pred, target, reduction='none'))
+        scalers = [StandardNormalization(condition_mean, condition_std),
+                   StandardNormalization(target_mean, target_std)]
 
-            return loss
+        if args.cuda:
+            for scaler in scalers:
+                scaler.cuda()
+
+        def seq_MSE(pred, target, length=None):
+            loss = 0
+            mask = None
+            if length is not None:
+                mask = torch.zeros(pred.shape, dtype=torch.double).to(pred)
+                for i, l in enumerate(length.squeeze()):
+                    mask[i, :int(l), :] = 1
+            total_loss = torch.zeros((pred.shape[0], pred.shape[2]), dtype=torch.double).to(pred)
+            for i in range(pred.shape[1]):
+                loss = F.mse_loss(pred[:, i, :], target[:, i, :], reduction='none')
+                if mask is not None:
+                    loss *= mask[:, i, :]
+
+                total_loss += loss
+
+            total_loss = total_loss / length.type(torch.float).squeeze(1)
+
+            return total_loss
 
         loss_funcs = [seq_MSE, seq_MSE]
 
@@ -346,34 +365,20 @@ def run(args, kwargs):
                 # pass data through model
 
                 train_loss = 0
-                inputs = [cond, target]
+                inputs_tmp = [cond, target]
                 # compute ELBO for each data combo
+                inputs = [scaler(inp) for scaler, inp in zip(scalers, inputs_tmp)]
                 for sel in binary_selections:
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
-                        print(sel_inputs)
                         recs, mu, logvar, logj, z0, zk = model(sel_inputs, length)
                         sel_loss, recs, kl = gen_elbo_loss(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk, logj,
                                                            args, lambda_weights=torch.DoubleTensor([1, 10]),
-                                                           annealing_factor=annealing_factor, beta=beta)
+                                                           annealing_factor=annealing_factor, beta=beta, length=length)
                         train_loss += sel_loss
 
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
                 train_loss.backward()
-                print('encoders grad:\n')
-                for enc in model.encoders:
-                    for name, p in enc.named_parameters():
-                        print(name, p.grad)
-                        # break
-                    break
-
-                # model.freeze_params(False, True, False)
-                print('decoders grad:\n')
-                for dec in model.decoders:
-                    for name, p in dec.named_parameters():
-                        print(name, p.grad)
-                        # break
-                    break
                 optimizer.step()
 
                 if batch_idx % args.log_interval == 0:
@@ -403,24 +408,30 @@ def run(args, kwargs):
                 binary_selections.append(selection)
 
             override_divergence_fn(model, "brute_force")
-            for batch_idx, (image, text) in enumerate(test_loader):
+            for batch_idx, (cond, target, length) in enumerate(train_loader):
 
                 if args.cuda:
-                    image = image.cuda()
-                    text = text.cuda()
-                image = Variable(image, volatile=True)
-                text = Variable(text, volatile=True)
-                batch_size = len(image)
+                    cond = cond.cuda()
+                    target = target.cuda()
+                    length = length.type(torch.DoubleTensor)
+                    length = length.cuda()
+
+                batch_size = len(cond)
+
+                # refresh the optimizer
+                optimizer.zero_grad()
+
+                # pass data through model
 
                 test_loss = 0
-                inputs = [image, text]
+                inputs_tmp = [cond, target]
                 # compute ELBO for each data combo
+                inputs = [scaler(inp) for scaler, inp in zip(scalers, inputs_tmp)]
                 for sel in binary_selections:
                         sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
-                        recs, mu, logvar, logj, z0, zk = model(sel_inputs)
-                        print('logj shape', logj.shape)
+                        recs, mu, logvar, logj, z0, zk = model(sel_inputs, length)
                         sel_loss, recs, kl = gen_elbo_loss(recs, sel_inputs, loss_funcs, mu, logvar, z0, zk, logj,
-                                                           args, lambda_weights=torch.DoubleTensor([1, 10]))
+                                                           args, lambda_weights=torch.DoubleTensor([1, 10]), length=length)
                         test_loss += sel_loss
 
                 test_loss_meter.update(test_loss.item(), batch_size)
@@ -441,18 +452,21 @@ def run(args, kwargs):
                 'args': args,
                 'encoders': encoders,
                 'decoders': decoders,
+                'scalers': scalers,
                 'train_loss': train_loss,
                 'best_loss': best_loss,
                 'test_loss': test_loss,
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
-            }, is_best, folder='./trained_simple_ts_models', filename='model_best_s')
+            }, is_best, folder='./trained_simple_ts_models', filename='checkpoint_s.pth.tar',
+                best_name='model_best_s.pth.tar')
             if (epoch - 1) % 10 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
                     'args': args,
                     'encoders': encoders,
                     'decoders': decoders,
+                    'scalers': scalers,
                     'train_loss': train_loss,
                     'best_loss': best_loss,
                     'test_loss': test_loss,

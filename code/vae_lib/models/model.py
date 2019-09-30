@@ -326,13 +326,9 @@ class LSTMEncoder(nn.Module):
         min_len = torch.min(lengths)
         for i in range(inp.shape[1]):
             self.lstm(inp[:, i, :])
-            print('step', i)
             if lengths is not None and i >= min_len:
-                print(lengths.type())
                 idx = torch.where(lengths.cpu() == i, torch.ones(lengths.shape, dtype=torch.uint8), torch.zeros(lengths.shape, dtype=torch.uint8))
                 idx = idx.squeeze()
-                print(lengths)
-                print(idx.shape)
                 if torch.sum(idx) > 0:
                     hidden_states[idx] = self.lstm.hidden[idx]
 
@@ -355,9 +351,9 @@ class LSTMDecoder(nn.Module):
     def forward(self, hidden_states, length=120):
         self.lstm.init_states(hidden_states.shape[0])
         self.lstm.hidden = hidden_states
-        inp = torch.zeros((hidden_states.shape[0], self.output_size))
-        outputs = torch.zeros((hidden_states.shape[0], length, self.output_size))
-        for i in range(length):
+        inp = torch.zeros((hidden_states.shape[0], self.output_size)).to(hidden_states)
+        outputs = torch.zeros((hidden_states.shape[0], int(length), self.output_size)).to(hidden_states)
+        for i in range(int(length)):
             inp = self.lstm(inp)
             outputs[:, i, :] = inp
         return outputs
@@ -440,6 +436,8 @@ class StandardNormalization(nn.Module):
         super(StandardNormalization, self).__init__()
         self.mean = nn.Parameter(mean)
         self.std = nn.Parameter(std)
+        self.mean.requires_grad = False
+        self.std.requires_grad = False
 
     def forward(self, input):
         return (input - self.mean) / self.std

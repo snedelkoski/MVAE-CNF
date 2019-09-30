@@ -280,8 +280,6 @@ def calculate_loss_array(x_mean, x, z_mu, z_var, z_0, z_k, ldj, args):
     return loss
 
 
-
-####################################
 def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj, args, lambda_image=1.0, lambda_text=10.0, annealing_factor=1.0, beta=1.):
     """Bimodal ELBO loss function.
     """
@@ -315,7 +313,8 @@ def elbo_loss(recon_image, image, recon_text, text,  z_mu, z_var, z_0, z_k, ldj,
     return ELBO, image_bce, text_bce, kl
 
 
-def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, lambda_weights=None, annealing_factor=1.0, beta=1.):
+def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, lambda_weights=None,
+                  annealing_factor=1.0, beta=1., length=None):
     """Multimodal ELBO loss function.
     """
     if lambda_weights is None:
@@ -343,7 +342,10 @@ def gen_elbo_loss(recons, inputs, loss_funcs, z_mu, z_var, z_0, z_k, ldj, args, 
     bces = torch.zeros(batch_size, (len(inputs))).to(kl)  # default params
     for i in range(len(inputs)):
         if inputs[i] is not None:
-            bces[:, i] = torch.sum(loss_funcs[i](recons[i], inputs[i]), dim=1, dtype=torch.double)
+            if length is None:
+                bces[:, i] = torch.sum(loss_funcs[i](recons[i], inputs[i]), dim=1, dtype=torch.double)
+            else:
+                bces[:, i] = torch.sum(loss_funcs[i](recons[i], inputs[i], length=length), dim=1, dtype=torch.double)
 
     lambda_weights = lambda_weights.to(bces)
     # Kingma and Welling. Auto-Encoding Variational Bayes. ICLR, 2014
@@ -363,20 +365,16 @@ def seq_elbo_loss(recons, inputs, loss_func, z_mu, z_var, p_mu, p_var, z_0, z_k,
     for inp in inputs:
         if inp is not None:
             batch_size = inp.shape[0]
-    # ln p(z_k)  (not averaged)
+
     if z_k is None:
         log_p_zk = log_normal_diag(z_0, mean=p_mu, log_var=p_var, dim=1)
     else:
         log_p_zk = log_normal_diag(z_k, mean=p_mu, log_var=p_var, dim=1)
-    # ln q(z_0)  (not averaged)
+
     log_q_z0 = log_normal_diag(z_0, mean=z_mu, log_var=z_var, dim=1)
-    # N E_q0[ ln q(z_0) - ln p(z_k) ]
-    # summed_logs = torch.sum(log_q_z0 - log_p_zk)
     logs = log_q_z0 - log_p_zk
     # sum over batches
     # summed_ldj = torch.sum(ldj)
-
-    # ldj = N E_q_z0[\sum_k log |det dz_k/dz_k-1| ]
     kl = logs.sub(ldj).to(torch.double)
 
     bces = torch.zeros(batch_size, (len(inputs))).to(kl)  # default params

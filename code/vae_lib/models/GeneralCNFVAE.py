@@ -36,8 +36,6 @@ class GenCNFVAE(VAE):
         for dec in decoders:
             self.decoders.append(dec(args.z_size))
         self.z_size = args.z_size
-        if args.cuda:
-            self.cuda()
 
     def forward(self, inputs):
         """

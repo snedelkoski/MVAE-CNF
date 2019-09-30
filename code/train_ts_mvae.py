@@ -11,6 +11,7 @@ import torch
 import torch.utils.data
 import torch.nn.functional as F
 import torch.optim as optim
+from torch import autograd
 import numpy as np
 import random
 from code.vae_lib.optimization.loss import seq_elbo_loss, cross_entropy,\
@@ -23,6 +24,7 @@ from code.vae_lib.models.model import TextEncoder, TextDecoder, ImageEncoder,\
 from torch.autograd import Variable
 from torchvision import transforms
 import datetime
+import time
 # from torchvision.datasets import MNIST
 from ml_utils.iap_loader import IAPDataset
 import lib.utils as utils
@@ -32,11 +34,12 @@ import lib.layers.odefunc as odefunc
 from code.vae_lib.models.GeneralCNFVAE import GenCNFVAE
 from code.vae_lib.models.train import load_checkpoint
 from code.vae_lib.models.seq_mvae import SeqMVAE
+from code.vae_lib.models.seq_mvae import CNFSeqMVAE
 from code.vae_lib.models.train import AverageMeter, save_checkpoint
 from code.vae_lib.optimization.training import train, evaluate
 from code.vae_lib.utils.load_data import load_dataset
 from code.vae_lib.utils.plotting import plot_training_curve
-SOLVERS = ["dopri5", "bdf", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
+SOLVERS = ["dopri5", "tsit5", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
 parser = argparse.ArgumentParser(description='PyTorch Sylvester Normalizing flows')
 
 parser.add_argument(
@@ -117,7 +120,7 @@ parser.add_argument("--num_blocks", type=int, default=1, help='Number of stacked
 parser.add_argument('--time_length', type=float, default=0.5)
 parser.add_argument('--train_T', type=eval, default=False)
 parser.add_argument("--divergence_fn", type=str, default="approximate", choices=["brute_force", "approximate"])
-parser.add_argument("--flow", type=str, default="cnf")
+parser.add_argument("--flow", type=bool, default=False)
 parser.add_argument("--nonlinearity", type=str, default="softplus", choices=odefunc.NONLINEARITIES)
 
 parser.add_argument('--solver', type=str, default='midpoint', choices=SOLVERS)
@@ -179,7 +182,7 @@ def run(args, kwargs):
     args.model_signature = args.model_signature.replace(':', '_')
 
     snapshots_path = os.path.join(args.out_dir, 'vae_' + args.dataset + '_')
-    snap_dir = snapshots_path + args.flow
+    snap_dir = snapshots_path + str(args.flow)
 
     snap_dir = snap_dir + '_' + args.dims + '_num_blocks_' + str(args.num_blocks)
 
@@ -202,7 +205,7 @@ def run(args, kwargs):
     # logger.info(args)
 
     # SAVING
-    torch.save(args, snap_dir + args.flow + '.config')
+    torch.save(args, snap_dir + str(args.flow) + '.config')
 
     # ==================================================================================================================
     # LOAD DATA
@@ -248,6 +251,8 @@ def run(args, kwargs):
     N_mini_batches = len(train_loader)
     test_loader = torch.utils.data.DataLoader(
         IAPDataset(datadir, suffix=suffix, train=False, target_id=target_id), batch_size=args.batch_size, shuffle=False)
+    print(len(test_loader.dataset))
+    print(len(train_loader.dataset))
     if not args.evaluate:
 
         # ==============================================================================================================
@@ -279,13 +284,17 @@ def run(args, kwargs):
         loss_func = F.mse_loss
 
         # model = GenMVAE(args, encoders, decoders)
+        if args.flow:
+            model_class = CNFSeqMVAE
+        else:
+            model_class = SeqMVAE
 
         if args.model_path == '':
-            model = SeqMVAE(args, encoders, decoders, x_maps, z_map,
-                            prior, recurrents)
+            model = model_class(args, encoders, decoders, x_maps, z_map,
+                                prior, recurrents)
         else:
             print('LOADING MODEL FROM FILE')
-            model = load_checkpoint(args.model_path, SeqMVAE, use_cuda=args.cuda,
+            model = load_checkpoint(args.model_path, model_class, use_cuda=args.cuda,
                                     keys=['encoders', 'decoders', 'x_maps', 'z_map',
                                           'prior', 'recurrents'])
         # if args.retrain_encoder:
@@ -315,12 +324,13 @@ def run(args, kwargs):
 
         # optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
         optimizer = optim.Adam(parameters, args.learning_rate)
-        lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.2, patience=10)
+        lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.2, patience=10, verbose=True)
 
         # ==================================================================================================================
         # TRAINING AND EVALUATION
         # ==================================================================================================================
         def train(epoch):
+            train_start = time.time()
             override_divergence_fn(model, "approximate")
             beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
             model.train()
@@ -354,52 +364,58 @@ def run(args, kwargs):
 
                 batch_size = len(condition)
 
-                # refresh the optimizer
-                optimizer.zero_grad()
-
-                # pass data through model
-                # print('condition shape', condition.shape)
-                # print('target shape', target.shape)
-                # print('lengths shape', length.shape)
-                # print('scaler_mean', model.scalers[0].mean)
-                # print('scaler_std', model.scalers[0].std)
-
                 train_loss = 0
                 inputs_tmp = [condition, target]
                 total_length = condition.shape[1]
                 batch_size = condition.shape[0]
-
                 inputs = [scaler(inp) for scaler, inp in zip(scalers, inputs_tmp)]
 
                 # compute ELBO for each data combo
                 for sel in binary_selections:
-                        sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
+                    optimizer.zero_grad()
+                    sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
 
-                        seq_inputs = transform_to_sequence(sel_inputs, total_length)
-                        model.init_states(batch_size)
+                    seq_inputs = transform_to_sequence(sel_inputs, total_length)
+                    model.init_states(batch_size)
 
-                        sel_loss = 0
-                        for i in range(total_length):
-                            # print('seq_inputs mean', seq_inputs[i][0].mean())
-                            # print('seq_inputs std', seq_inputs[i][0].std())
-                            recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
-                            seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
-                                                               args, lambda_weights=torch.DoubleTensor([1, 1]),
-                                                               annealing_factor=annealing_factor, beta=beta)
-                            # print('loss shape', seq_loss.shape)
-                            # print('loss', seq_loss)
-                            loss_mask = i < length
-                            loss_mask = loss_mask.type(torch.DoubleTensor).squeeze()
-                            loss_mask = loss_mask.to(seq_loss)
-                            # print('loss_mask', loss_mask)
-                            # print('loss * mask', seq_loss * loss_mask)
-                            # print('loss after mask:', torch.sum((seq_loss * loss_mask) / length.squeeze()))
-                            sel_loss += torch.sum((seq_loss * loss_mask) / length.squeeze())
-                        train_loss += sel_loss
+                    sel_loss = 0
+                    # for i in range(20):
+                    for i in range(total_length):
+                        recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
+                        seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
+                                                           args, lambda_weights=torch.DoubleTensor([1, 1]),
+                                                           annealing_factor=annealing_factor, beta=beta)
+                        # print('seq_loss', seq_loss)
+                        loss_mask = i < length
+                        loss_mask = loss_mask.type(torch.DoubleTensor).squeeze()
+                        loss_mask = loss_mask.to(seq_loss)
+                        # print('loss mask', loss_mask.shape)
+                        # print('length shape', length.squeeze().shape)
+                        sel_loss += torch.sum((seq_loss * loss_mask) / length.squeeze())
+                        # sel_loss.backward(retain_graph=True)
+                        # print('time', i)
+                        # print('sel_loss', sel_loss)
 
+                    # print('sel_loss', sel_loss)
+                    # try:
+                    # print('before backward')
+                    try:
+                        sel_loss.backward()
+                        train_loss += sel_loss.data / len(length)
+                        # print('did backward')
+                        # except RuntimeError:
+                        #     print('Solver error skipping step')
+                        # print('clipping')
+                        torch.nn.utils.clip_grad_value_(model.parameters(), 1)
+                        # print('did backward')
+                        # print('doing step')
+                        optimizer.step()
+                    except RuntimeError:
+                        print('solver backprop error, skipping step')
+
+                # train_loss.backward()
                 train_loss_meter.update(train_loss.item(), batch_size)
                 # compute gradients and take step
-                train_loss.backward()
                 # print('encoders grad:\n')
                 # for enc in model.encoders:
                 #     for name, p in enc.named_parameters():
@@ -414,13 +430,11 @@ def run(args, kwargs):
                 #         print(name, p.grad)
                 #         # break
                 #     break
-                torch.nn.utils.clip_grad_value_(model.parameters(), 1)
-                optimizer.step()
 
                 if batch_idx % args.log_interval == 0:
-                    print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}'.format(
+                    print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}\tTime: {:.3f}'.format(
                           epoch, batch_idx * len(length), len(train_loader.dataset),
-                          100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor))
+                          100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor, time.time() - train_start))
 
             if epoch > 20:
                 lr_scheduler.step(train_loss_meter.avg)
@@ -430,82 +444,88 @@ def run(args, kwargs):
             return train_loss_meter.avg
 
         def test(epoch):
+            test_start = time.time()
 
             model.eval()
-            # beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
-            test_loss_meter = AverageMeter()
-            binary_selections = [np.ones((args.num_inputs, 1))]
+            with torch.no_grad():
+                # beta = min([(epoch * 1.) / max([args.warmup, 1.]), args.max_beta])
+                test_loss_meter = AverageMeter()
+                binary_selections = [np.ones((args.num_inputs, 1))]
 
-            for i in range(args.num_inputs):
-                selection = np.zeros((args.num_inputs, 1))
-                selection[i] = 1
-                binary_selections.append(selection)
+                for i in range(args.num_inputs):
+                    selection = np.zeros((args.num_inputs, 1))
+                    selection[i] = 1
+                    binary_selections.append(selection)
 
-            for i in range(args.num_subsets):
-                selection = np.random.choice([0, 1], size=args.num_inputs)
-                binary_selections.append(selection)
+                for i in range(args.num_subsets):
+                    selection = np.random.choice([0, 1], size=args.num_inputs)
+                    binary_selections.append(selection)
 
-            override_divergence_fn(model, "brute_force")
-            for batch_idx, (condition, target, length) in enumerate(test_loader):
+                override_divergence_fn(model, "brute_force")
+                for batch_idx, (condition, target, length) in enumerate(test_loader):
 
-                if args.cuda:
-                    condition = condition.cuda()
-                    target = target.cuda()
-                    length = length.type(torch.DoubleTensor)
-                    length = length.cuda()
+                    if args.cuda:
+                        condition = condition.cuda()
+                        target = target.cuda()
+                        length = length.type(torch.DoubleTensor)
+                        length = length.cuda()
 
-                batch_size = len(condition)
+                    batch_size = len(condition)
+                    # print('test length', batch_size)
 
-                # refresh the optimizer
-                optimizer.zero_grad()
+                    # refresh the optimizer
 
-                # pass data through model
-                # print('condition shape', condition.shape)
-                # print('target shape', target.shape)
-                # print('lengths shape', length.shape)
-                # print('scaler_mean', model.scalers[0].mean)
-                # print('scaler_std', model.scalers[0].std)
+                    # pass data through model
+                    # print('condition shape', condition.shape)
+                    # print('target shape', target.shape)
+                    # print('lengths shape', length.shape)
+                    # print('scaler_mean', model.scalers[0].mean)
+                    # print('scaler_std', model.scalers[0].std)
 
-                test_loss = 0
-                inputs_tmp = [condition, target]
-                total_length = condition.shape[1]
-                batch_size = condition.shape[0]
+                    test_loss = 0
+                    inputs_tmp = [condition, target]
+                    total_length = condition.shape[1]
+                    batch_size = condition.shape[0]
 
-                inputs = [scaler(inp) for scaler, inp in zip(scalers, inputs_tmp)]
-                # compute ELBO for each data combo
-                for sel in binary_selections:
-                        sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
+                    inputs = [scaler(inp) for scaler, inp in zip(scalers, inputs_tmp)]
+                    # compute ELBO for each data combo
+                    for sel in binary_selections:
+                            sel_inputs = [inp if flag else None for flag, inp in zip(sel, inputs)]
 
-                        # print(sel_inputs)
-                        seq_inputs = transform_to_sequence(sel_inputs, total_length)
-                        model.init_states(batch_size)
+                            # print(sel_inputs)
+                            seq_inputs = transform_to_sequence(sel_inputs, total_length)
+                            model.init_states(batch_size)
 
-                        sel_loss = 0
-                        for i in range(total_length):
-                            # print('seq_inputs', seq_inputs[0])
-                            recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
-                            seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
-                                                               args, lambda_weights=torch.DoubleTensor([1, 1]),
-                                                               )
-                            # print('loss shape', seq_loss.shape)
-                            # print('loss', seq_loss)
-                            loss_mask = i < length
-                            loss_mask = loss_mask.type(torch.DoubleTensor).squeeze()
-                            loss_mask = loss_mask.to(seq_loss)
-                            # print('loss_mask', loss_mask)
-                            # print('loss * mask', seq_loss * loss_mask)
-                            # print('loss after mask:', torch.sum((seq_loss * loss_mask) / length.squeeze()))
-                            sel_loss += torch.sum((seq_loss * loss_mask) / length.squeeze())
-                        test_loss += sel_loss
+                            sel_loss = 0
+                            for i in range(total_length):
+                                # print('seq_inputs', seq_inputs[0])
+                                recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
+                                seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
+                                                                   args, lambda_weights=torch.DoubleTensor([1, 1]),
+                                                                   )
+                                # print('loss shape', seq_loss.shape)
+                                # print('loss', seq_loss)
+                                loss_mask = i < length
+                                loss_mask = loss_mask.type(torch.DoubleTensor).squeeze()
+                                loss_mask = loss_mask.to(seq_loss)
+                                # print('loss_mask', loss_mask)
+                                # print('loss * mask', seq_loss * loss_mask)
+                                # print('loss after mask:', torch.sum((seq_loss * loss_mask) / length.squeeze()))
+                                sel_loss += torch.sum((seq_loss * loss_mask) / length.squeeze())
+                                # print('len', i)
+                                # print('sel_loss test', sel_loss)
+                            test_loss += sel_loss / len(length.squeeze())
 
-                test_loss_meter.update(test_loss.item(), batch_size)
+                    # print('test batch time', time.time() - test_start)
+                    test_loss_meter.update(test_loss.item(), batch_size)
 
-            print('====> Test Loss: {:.4f}'.format(test_loss_meter.avg))
+            print('====> Test Loss: {:.4f}\tTime{:.4f}'.format(test_loss_meter.avg, time.time() - test_start))
             return test_loss_meter.avg
 
         best_loss = sys.maxsize
         for epoch in range(args.start_epoch, args.epochs + 1):
-            train_loss = train(epoch)
+            with autograd.detect_anomaly():
+                train_loss = train(epoch)
             # print ("Test")
             test_loss = test(epoch)
             is_best = test_loss < best_loss
@@ -525,7 +545,7 @@ def run(args, kwargs):
                 'test_loss': test_loss,
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
-            }, is_best, folder='./trained_ts_models', filename='model_best_s.pth.tar')
+            }, is_best, folder='./trained_ts_models', filename='model_best_s_nocnf.pth.tar')
             if (epoch - 1) % 10 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
@@ -542,7 +562,7 @@ def run(args, kwargs):
                     'test_loss': test_loss,
                     'n_latents': args.z_size,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, folder='./trained_ts_models', filename='checkpoint_s' + str(epoch - 1) + '.pth.tar')
+                }, is_best, folder='./trained_ts_models', filename='checkpoint_s_nocnf' + str(epoch - 1) + '.pth.tar')
 
 
 if __name__ == "__main__":

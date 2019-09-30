@@ -125,13 +125,13 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
 
-def save_checkpoint(state, is_best, folder='./', filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, folder='./', filename='checkpoint.pth.tar', best_name='model_best.pth.tar'):
     if not os.path.isdir(folder):
         os.mkdir(folder)
     torch.save(state, os.path.join(folder, filename))
     if is_best:
         shutil.copyfile(os.path.join(folder, filename),
-                        os.path.join(folder, 'model_best.pth.tar'))
+                        os.path.join(folder, best_name))
 
 
 def load_checkpoint(file_path, model_class, use_cuda=False, keys=['encoders', 'decoders', 'embeddings']):

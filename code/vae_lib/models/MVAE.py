@@ -45,14 +45,7 @@ class GenMVAE(VAE):
         # Sample z_0
         z0 = self.reparameterize(z_mu, z_var)
         # z0 = z0.to(z_mu)
-        reconstructions = []
-
-        for dec in self.decoders:
-            if lengths is None:
-                reconstructions.append(dec(z0))
-            else:
-                reconstructions.append(dec(z0, length=max(lengths)))
-        print('z0 shape', z0.shape)
+        reconstructions = self.decode(z0, lengths=lengths)
 
         return reconstructions, z_mu, z_var, torch.zeros((z0.shape[0], )).to(z0), z0, None
 
@@ -83,7 +76,7 @@ class GenMVAE(VAE):
             if lengths is None:
                 mean_z, var_z = enc(inp)
             else:
-                mean_z, var_z = enc(inp, lengths)
+                mean_z, var_z = enc(inp, max(lengths))
             mu = torch.cat((mu, mean_z.unsqueeze(0)), dim=0)
             logvar = torch.cat((logvar, var_z.unsqueeze(0)), dim=0)
 
@@ -92,6 +85,16 @@ class GenMVAE(VAE):
         mu, logvar = self.experts(mu, logvar)
 
         return mu, logvar
+
+    def decode(self, z0, lengths=None):
+        reconstructions = []
+        for dec in self.decoders:
+            if lengths is None:
+                reconstructions.append(dec(z0))
+            else:
+                reconstructions.append(dec(z0, length=max(lengths)))
+
+        return reconstructions
 
     def reparameterize(self, mu, var):
         """
@@ -104,4 +107,3 @@ class GenMVAE(VAE):
             return eps.mul(std).add_(mu)
         else:
             return mu
-
