@@ -545,8 +545,9 @@ def run(args, kwargs):
                 'test_loss': test_loss,
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
-            }, is_best, folder='./trained_ts_models', filename='model_best_s_nocnf.pth.tar')
-            if (epoch - 1) % 10 == 0:
+                'epoch': epoch,
+            }, is_best, folder='./trained_ts_models', filename='checkpoint_s_nocnf.pth.tar', best_name='model_best_s_nocnf.pth.tar')
+            if (epoch - 1) % 50 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
                     'args': args,
@@ -562,7 +563,8 @@ def run(args, kwargs):
                     'test_loss': test_loss,
                     'n_latents': args.z_size,
                     'optimizer': optimizer.state_dict(),
-                }, is_best, folder='./trained_ts_models', filename='checkpoint_s_nocnf' + str(epoch - 1) + '.pth.tar')
+                    'epoch': epoch,
+                }, False, folder='./trained_ts_models', filename='checkpoint_s_nocnf' + str(epoch - 1) + '.pth.tar')
 
 
 if __name__ == "__main__":
