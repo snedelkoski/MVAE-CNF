@@ -5,6 +5,9 @@ from __future__ import print_function
 from code.vae_lib.models.train_misc import count_nfe, override_divergence_fn
 
 
+import colorama
+import traceback
+from colorama import Fore, Back, Style
 import argparse
 import sys
 import torch
@@ -17,11 +20,11 @@ import random
 from code.vae_lib.optimization.loss import seq_elbo_loss, cross_entropy,\
     binary_cross_entropy_with_logits
 import os
+import pdb
 
 from code.vae_lib.models.model import TextEncoder, TextDecoder, ImageEncoder,\
     ImageDecoder, SeqMLP, RecurrentState, StandardNormalization
 
-from torch.autograd import Variable
 from torchvision import transforms
 import datetime
 import time
@@ -32,7 +35,7 @@ import lib.layers.odefunc as odefunc
 
 # import code.vae_lib.models.CNFVAE as CNFVAE
 from code.vae_lib.models.GeneralCNFVAE import GenCNFVAE
-from code.vae_lib.models.train import load_checkpoint
+from code.vae_lib.models.train import load_checkpoint, load_optimizer
 from code.vae_lib.models.seq_mvae import SeqMVAE
 from code.vae_lib.models.seq_mvae import CNFSeqMVAE
 from code.vae_lib.models.train import AverageMeter, save_checkpoint
@@ -41,6 +44,7 @@ from code.vae_lib.utils.load_data import load_dataset
 from code.vae_lib.utils.plotting import plot_training_curve
 SOLVERS = ["dopri5", "tsit5", "rk4", "midpoint", 'adams', 'explicit_adams', 'fixed_adams']
 parser = argparse.ArgumentParser(description='PyTorch Sylvester Normalizing flows')
+colorama.init()
 
 parser.add_argument(
     '-d', '--dataset', type=str, default='synthetic', choices=['synthetic', 'plant_c'],
@@ -246,6 +250,7 @@ def run(args, kwargs):
     print('x mean', condition_mean)
     print('y mean', target_mean)
 
+    start_epoch = args.start_epoch
     train_loader = torch.utils.data.DataLoader(
         IAPDataset(datadir, suffix=suffix, train=True, target_id=target_id), batch_size=args.batch_size, shuffle=True)
     N_mini_batches = len(train_loader)
@@ -292,11 +297,17 @@ def run(args, kwargs):
         if args.model_path == '':
             model = model_class(args, encoders, decoders, x_maps, z_map,
                                 prior, recurrents)
+            parameters = model.parameters()
+            optimizer = optim.Adam(parameters, args.learning_rate)
         else:
             print('LOADING MODEL FROM FILE')
-            model = load_checkpoint(args.model_path, model_class, use_cuda=args.cuda,
+            model, start_epoch = load_checkpoint(args.model_path, model_class, use_cuda=args.cuda,
                                     keys=['encoders', 'decoders', 'x_maps', 'z_map',
                                           'prior', 'recurrents'])
+
+            parameters = model.parameters()
+            optimizer = load_optimizer(args.model_path, optim.Adam,
+                                       parameters, lr=args.learning_rate)
         # if args.retrain_encoder:
         #     logger.info(f"Initializing decoder from {args.model_path}")
         #     dec_model = torch.load(args.model_path)
@@ -320,10 +331,8 @@ def run(args, kwargs):
         #             logger.info(name)
         #             parameters.append(param)
         # else:
-        parameters = model.parameters()
 
         # optimizer = optim.Adamax(parameters, lr=args.learning_rate, eps=1.e-7)
-        optimizer = optim.Adam(parameters, args.learning_rate)
         lr_scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.2, patience=10, verbose=True)
 
         # ==================================================================================================================
@@ -383,8 +392,11 @@ def run(args, kwargs):
                     for i in range(total_length):
                         recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
                         seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
-                                                           args, lambda_weights=torch.DoubleTensor([1, 1]),
+                                                           args, lambda_weights=torch.DoubleTensor([1, condition_size/target_size]),
                                                            annealing_factor=annealing_factor, beta=beta)
+                        if batch_idx == 3 and epoch == 5:
+                            # print('logvar', logvar)
+                            print('nans', torch.sum(torch.isnan(logvar)), 'min', torch.min(logvar), 'max', torch.max(logvar))
                         # print('seq_loss', seq_loss)
                         loss_mask = i < length
                         loss_mask = loss_mask.type(torch.DoubleTensor).squeeze()
@@ -399,19 +411,21 @@ def run(args, kwargs):
                     # print('sel_loss', sel_loss)
                     # try:
                     # print('before backward')
-                    try:
-                        sel_loss.backward()
-                        train_loss += sel_loss.data / len(length)
-                        # print('did backward')
-                        # except RuntimeError:
-                        #     print('Solver error skipping step')
-                        # print('clipping')
-                        torch.nn.utils.clip_grad_value_(model.parameters(), 1)
-                        # print('did backward')
-                        # print('doing step')
-                        optimizer.step()
-                    except RuntimeError:
-                        print('solver backprop error, skipping step')
+                    # try:
+                    # if batch_idx == 3 and epoch == 5:
+                    #     pdb.set_trace()
+                    sel_loss.backward()
+                    train_loss += sel_loss.data / len(length)
+                    # print('did backward')
+                    # except RuntimeError:
+                    #     print('Solver error skipping step')
+                    # print('clipping')
+                    torch.nn.utils.clip_grad_value_(model.parameters(), 1)
+                    # print('did backward')
+                    # print('doing step')
+                    optimizer.step()
+                    # except RuntimeError:
+                    #     print('solver backprop error, skipping step')
 
                 # train_loss.backward()
                 train_loss_meter.update(train_loss.item(), batch_size)
@@ -435,9 +449,6 @@ def run(args, kwargs):
                     print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}\tAnnealing-Factor: {:.3f}\tTime: {:.3f}'.format(
                           epoch, batch_idx * len(length), len(train_loader.dataset),
                           100. * batch_idx / len(train_loader), train_loss_meter.avg, annealing_factor, time.time() - train_start))
-
-            if epoch > 20:
-                lr_scheduler.step(train_loss_meter.avg)
 
             print('====> Epoch: {}\tLoss: {:.4f}'.format(epoch, train_loss_meter.avg))
 
@@ -501,7 +512,7 @@ def run(args, kwargs):
                                 # print('seq_inputs', seq_inputs[0])
                                 recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[i])
                                 seq_loss, recs, kl = seq_elbo_loss(recs, seq_inputs[i], loss_func, mu, logvar, p_mu, p_var, z0, zk, logj,
-                                                                   args, lambda_weights=torch.DoubleTensor([1, 1]),
+                                                                   args, lambda_weights=torch.DoubleTensor([1, condition_size/target_size]),
                                                                    )
                                 # print('loss shape', seq_loss.shape)
                                 # print('loss', seq_loss)
@@ -523,11 +534,21 @@ def run(args, kwargs):
             return test_loss_meter.avg
 
         best_loss = sys.maxsize
-        for epoch in range(args.start_epoch, args.epochs + 1):
-            with autograd.detect_anomaly():
+        for epoch in range(start_epoch, args.epochs + 1):
+            with GuruMeditation():
                 train_loss = train(epoch)
             # print ("Test")
             test_loss = test(epoch)
+            if args.flow:
+                cnf_suffix = 'cnf'
+            else:
+                cnf_suffix = 'nocnf'
+            if args.dataset == 'synthetic':
+                data_suffix = 's_'
+            elif args.dataset == 'plant_c':
+                data_suffix = 'c_'
+            else:
+                data_suffix = ''
             is_best = test_loss < best_loss
             best_loss = min(test_loss, best_loss)
             save_checkpoint({
@@ -546,7 +567,9 @@ def run(args, kwargs):
                 'n_latents': args.z_size,
                 'optimizer': optimizer.state_dict(),
                 'epoch': epoch,
-            }, is_best, folder='./trained_ts_models', filename='checkpoint_s_nocnf.pth.tar', best_name='model_best_s_nocnf.pth.tar')
+            }, is_best, folder='./trained_ts_models',
+               filename='checkpoint_' + data_suffix + cnf_suffix + '.pth.tar',
+               best_name='model_best_' + data_suffix + cnf_suffix + '.pth.tar')
             if (epoch - 1) % 50 == 0:
                 save_checkpoint({
                     'state_dict': model.state_dict(),
@@ -564,7 +587,32 @@ def run(args, kwargs):
                     'n_latents': args.z_size,
                     'optimizer': optimizer.state_dict(),
                     'epoch': epoch,
-                }, False, folder='./trained_ts_models', filename='checkpoint_s_nocnf' + str(epoch - 1) + '.pth.tar')
+                }, False, folder='./trained_ts_models',
+                   filename='checkpoint_' + data_suffix + cnf_suffix + str(epoch - 1) + '.pth.tar')
+
+
+class GuruMeditation (autograd.detect_anomaly):
+    def __init__(self):
+        super(GuruMeditation, self).__init__()
+
+    def __enter__(self):
+        super(GuruMeditation, self).__enter__()
+        return self
+
+    def halt(self, msg):
+        print(Fore.RED + "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓")
+        print(Fore.RED + "┃ Software Failure. Press left mouse button to continue ┃")
+        print(Fore.RED + "┃        Guru Meditation 00000004, 0000AAC0             ┃")
+        print(Fore.RED + "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛")
+        print(Style.RESET_ALL)
+        print(msg)
+        pdb.set_trace()
+
+    def __exit__(self, type, value, trace):
+        super(GuruMeditation, self).__exit__()
+        if isinstance(value, RuntimeError):
+            traceback.print_tb(trace)
+            self.halt(str(value))
 
 
 if __name__ == "__main__":

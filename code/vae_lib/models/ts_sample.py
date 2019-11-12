@@ -12,7 +12,7 @@ from torch.autograd import Variable
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 # from code.vae_lib.models.MVAEGAN import MCVAEGAN
-from code.vae_lib.models.seq_mvae import SeqMVAE
+from code.vae_lib.models.seq_mvae import SeqMVAE, CNFSeqMVAE
 from code.vae_lib.models.model import StandardNormalization
 
 from ml_utils.iap_loader import IAPDataset
@@ -73,6 +73,10 @@ if __name__ == "__main__":
                         help='enables CUDA training')
     parser.add_argument('--length_std', type=float, default=0,
                         help='variance of random lengths')
+    parser.add_argument('--smooth', type=bool, default=False,
+                        help='Generate smooth or randomized curves')
+    parser.add_argument('--flow', type=bool, default=False,
+                        help='If True use model with continuous normalizing flows')
     args = parser.parse_args()
     args.cuda = args.cuda and torch.cuda.is_available()
 
@@ -108,21 +112,32 @@ if __name__ == "__main__":
     scalers = [StandardNormalization(condition_mean, condition_std),
                StandardNormalization(target_mean, target_std)]
 
-    model = load_checkpoint(args.model_path, SeqMVAE, use_cuda=args.cuda,
+    if args.flow:
+        model_class = CNFSeqMVAE
+    else:
+        model_class = SeqMVAE
+
+    model, _ = load_checkpoint(args.model_path, model_class, use_cuda=args.cuda,
                             keys=['encoders', 'decoders', 'x_maps', 'z_map',
-                                  'prior', 'recurrents'])
+                                'prior', 'recurrents'], map_location='cuda:0')
     model.eval()
     if args.cuda:
         model.cuda()
         for scaler in scalers:
             scaler.cuda()
 
+    for rec in model.recurrents:
+        rec.device = 'cuda:0'
+
     sample_list = []
     condition_list = []
     target_list = []
     for i in range(args.n_samples):
         model.init_states(1)
-        model.train()
+        if args.smooth:
+            model.eval()
+        else:
+            model.train()
 
         # mode 1: unconditional generation
         if not args.condition_on_conditions and not args.condition_on_targets:

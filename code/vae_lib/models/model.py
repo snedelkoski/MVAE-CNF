@@ -226,7 +226,10 @@ class ProductOfExperts(nn.Module):
     @param logvar: M x D for M experts
     """
     def forward(self, mu, logvar, eps=1e-8):
+        # print('logvar', logvar)
+        logvar = torch.clamp(logvar, -2.5, 2.5)
         var       = torch.exp(logvar) + eps
+        # print('var', var)
         # precision of i-th Gaussian expert at point x
         T         = 1. / (var + eps)
         pd_mu     = torch.sum(mu * T, dim=0) / torch.sum(T, dim=0)
