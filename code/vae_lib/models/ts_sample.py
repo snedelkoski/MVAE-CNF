@@ -75,18 +75,20 @@ if __name__ == "__main__":
                         help='variance of random lengths')
     parser.add_argument('--smooth', type=bool, default=False,
                         help='Generate smooth or randomized curves')
-    parser.add_argument('--flow', type=bool, default=False,
-                        help='If True use model with continuous normalizing flows')
+    parser.add_argument('--flow', action='store_true',
+                        help='Use model with continuous normalizing flows')
+    parser.add_argument('--cpu', action='store_true',
+                        help='Use cpu.')
     args = parser.parse_args()
-    args.cuda = args.cuda and torch.cuda.is_available()
+    args.cuda = args.cuda and torch.cuda.is_available() and (not args.cpu)
 
     if args.dataset == 'synthetic':
-        X_train = np.load('../../../data/basf-iap/synthetic/X_train_smooth.npy')
-        Y_train = np.load('../../../data/basf-iap/synthetic/Y_train_smooth.npy')
+        X_train = np.load('../../../data/basf-iap/synthetic/X_train_smooth_py.npy')
+        Y_train = np.load('../../../data/basf-iap/synthetic/Y_train_smooth_py.npy')
         target_id = 4
         Y_train = Y_train[:, target_id:target_id + 1]
         datadir = '../../../data/basf-iap/synthetic/'
-        suffix = 'smooth'
+        suffix = 'smooth_py'
         condition_size = 6
         target_size = 1
     if args.dataset == 'plant_c':
@@ -117,9 +119,10 @@ if __name__ == "__main__":
     else:
         model_class = SeqMVAE
 
+    device = 'cuda:0' if args.cuda else 'cpu'
     model, _ = load_checkpoint(args.model_path, model_class, use_cuda=args.cuda,
                             keys=['encoders', 'decoders', 'x_maps', 'z_map',
-                                'prior', 'recurrents'], map_location='cuda:0')
+                                'prior', 'recurrents'], map_location=device)
     model.eval()
     if args.cuda:
         model.cuda()
@@ -127,7 +130,7 @@ if __name__ == "__main__":
             scaler.cuda()
 
     for rec in model.recurrents:
-        rec.device = 'cuda:0'
+        rec.device = device
 
     sample_list = []
     condition_list = []

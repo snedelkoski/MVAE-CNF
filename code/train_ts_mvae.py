@@ -220,12 +220,12 @@ def run(args, kwargs):
     args.input_type = 'binary'
 
     if args.dataset == 'synthetic':
-        X_train = np.load('../data/basf-iap/synthetic/X_train_smooth.npy')
-        Y_train = np.load('../data/basf-iap/synthetic/Y_train_smooth.npy')
+        X_train = np.load('../data/basf-iap/synthetic/X_train_smooth_py.npy')
+        Y_train = np.load('../data/basf-iap/synthetic/Y_train_smooth_py.npy')
         target_id = 4
         Y_train = Y_train[:, target_id:target_id + 1]
         datadir = '../data/basf-iap/synthetic/'
-        suffix = 'smooth'
+        suffix = 'smooth_py'
         condition_size = 6
         target_size = 1
     if args.dataset == 'plant_c':
@@ -544,7 +544,7 @@ def run(args, kwargs):
             else:
                 cnf_suffix = 'nocnf'
             if args.dataset == 'synthetic':
-                data_suffix = 's_'
+                data_suffix = 's_py_'
             elif args.dataset == 'plant_c':
                 data_suffix = 'c_'
             else:
