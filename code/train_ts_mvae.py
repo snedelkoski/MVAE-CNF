@@ -544,7 +544,7 @@ def run(args, kwargs):
             else:
                 cnf_suffix = 'nocnf'
             if args.dataset == 'synthetic':
-                data_suffix = 's_py_'
+                data_suffix = 's_py2_'
             elif args.dataset == 'plant_c':
                 data_suffix = 'c_'
             else:

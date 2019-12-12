@@ -12,7 +12,7 @@ from torch.autograd import Variable
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 # from code.vae_lib.models.MVAEGAN import MCVAEGAN
-from code.vae_lib.models.seq_mvae import SeqMVAE, CNFSeqMVAE
+from code.vae_lib.models.MVAE import GenMVAE
 from code.vae_lib.models.model import StandardNormalization
 
 from ml_utils.iap_loader import IAPDataset
@@ -29,25 +29,9 @@ def fetch_ts_sample(datadir, suffix, target_id):
              MNIST image
     """
     ts_dataset = IAPDataset(datadir,
-                            suffix=suffix, train=True, target_id=target_id)
+                            suffix=suffix, train=False, target_id=target_id)
     condition, target, length = ts_dataset[np.random.randint(len(ts_dataset))]
     return condition, target, length
-
-
-def transform_to_sequence(sel_inputs, total_length):
-    seq_inputs = []
-    for i in range(total_length):
-        curr_inp = [None] * len(sel_inputs)
-        for j in range(len(sel_inputs)):
-            if sel_inputs[j] is not None:
-                # print('sel input shape', sel_inputs[j].shape)
-                # print('total_length', total_length)
-                if sel_inputs[j].shape[1] == total_length:
-                    curr_inp[j] = sel_inputs[j][:, i, :]
-                else:
-                    curr_inp[j] = sel_inputs[j][:, 0, :]
-        seq_inputs.append(curr_inp)
-    return(seq_inputs)
 
 
 if __name__ == "__main__":
@@ -73,22 +57,16 @@ if __name__ == "__main__":
                         help='enables CUDA training')
     parser.add_argument('--length_std', type=float, default=0,
                         help='variance of random lengths')
-    parser.add_argument('--smooth', type=bool, default=False,
-                        help='Generate smooth or randomized curves')
-    parser.add_argument('--flow', action='store_true',
-                        help='Use model with continuous normalizing flows')
-    parser.add_argument('--cpu', action='store_true',
-                        help='Use cpu.')
     args = parser.parse_args()
-    args.cuda = args.cuda and torch.cuda.is_available() and (not args.cpu)
+    args.cuda = args.cuda and torch.cuda.is_available()
 
     if args.dataset == 'synthetic':
-        X_train = np.load('../../../data/basf-iap/synthetic/X_train_smooth_py.npy')
-        Y_train = np.load('../../../data/basf-iap/synthetic/Y_train_smooth_py.npy')
+        X_train = np.load('../../../data/basf-iap/synthetic/X_train_smooth.npy')
+        Y_train = np.load('../../../data/basf-iap/synthetic/Y_train_smooth.npy')
         target_id = 4
         Y_train = Y_train[:, target_id:target_id + 1]
         datadir = '../../../data/basf-iap/synthetic/'
-        suffix = 'smooth_py'
+        suffix = 'smooth'
         condition_size = 6
         target_size = 1
     if args.dataset == 'plant_c':
@@ -114,39 +92,27 @@ if __name__ == "__main__":
     scalers = [StandardNormalization(condition_mean, condition_std),
                StandardNormalization(target_mean, target_std)]
 
-    if args.flow:
-        model_class = CNFSeqMVAE
-    else:
-        model_class = SeqMVAE
-
-    device = 'cuda:0' if args.cuda else 'cpu'
-    model, _ = load_checkpoint(args.model_path, model_class, use_cuda=args.cuda,
-                            keys=['encoders', 'decoders', 'x_maps', 'z_map',
-                                'prior', 'recurrents'], map_location=device)
+    model = load_checkpoint(args.model_path, GenMVAE, use_cuda=args.cuda,
+                            keys=['encoders', 'decoders'])
     model.eval()
     if args.cuda:
         model.cuda()
         for scaler in scalers:
             scaler.cuda()
 
-    for rec in model.recurrents:
-        rec.device = device
-
     sample_list = []
     condition_list = []
     target_list = []
     for i in range(args.n_samples):
-        model.init_states(1)
-        if args.smooth:
-            model.eval()
-        else:
-            model.train()
+        model.train()
 
         # mode 1: unconditional generation
         if not args.condition_on_conditions and not args.condition_on_targets:
             rand = np.random.randn()
             total_length = args.length + int(rand * args.length_std)
             input_length = args.length + int(rand * args.length_std)
+            print('input length', input_length)
+            input_length = torch.Tensor([int(input_length)])
             inputs = [None, None]
         # mode 2: generate conditioned on image
         elif args.condition_on_conditions and not args.condition_on_targets:
@@ -156,7 +122,7 @@ if __name__ == "__main__":
                 condition = condition.cuda()
             print('condition shape', condition.shape)
             print('length', length)
-            input_length = int(length.squeeze())
+            input_length = length
             total_length = condition.shape[0]
             print('unsqueeze shape', condition.unsqueeze(0).shape)
             inputs = [scalers[0](condition.unsqueeze(0)), None]
@@ -164,10 +130,9 @@ if __name__ == "__main__":
         elif args.condition_on_targets and not args.condition_on_conditions:
             _, target, length = fetch_ts_sample(datadir, suffix, target_id)
             target_list.append(target.numpy())
-            print('nonzero values', np.sum(target.numpy()>0))
             if args.cuda:
                 target = target.cuda()
-            input_length = int(length.squeeze())
+            input_length = length
             total_length = target.shape[0]
             # print('input length', input_length)
             # print('total length', total_length)
@@ -176,40 +141,27 @@ if __name__ == "__main__":
             condition, target, length = fetch_ts_sample(datadir, suffix, target_id)
             condition_list.append(condition.numpy())
             target_list.append(target.numpy())
-            print('nonzero values', np.sum(target.numpy()>0))
             if args.cuda:
                 condition = condition.cuda()
                 target = target.cuda()
-            input_length = int(length.squeeze())
+            input_length = length
             total_length = target.shape[0]
             inputs = [scalers[0](condition.unsqueeze(0)), scalers[1](target.unsqueeze(0))]
         # sample from uniform gaussian
-        seq_inputs = transform_to_sequence(inputs, total_length)
+        print('inputs', inputs)
+        print('input_length', input_length)
 
-        recon_condition = None
-        recon_target = None
-        for j in range(input_length):
-            recs, mu, logvar, p_mu, p_var, logj, z0, zk = model(seq_inputs[j])
-            if recon_condition is None:
-                recon_condition = recs[0]
-                recon_target = recs[1]
-            else:
-                recon_condition = torch.cat((recon_condition, recs[0]), dim=0)
-                recon_target = torch.cat((recon_target, recs[1]), dim=0)
+        recs, mu, logvar, logj, z0, zk = model(inputs, input_length)
 
-        recon_condition = recon_condition.cpu().detach().numpy()
-        recon_target = recon_target.cpu().detach().numpy()
+        recon_condition = recs[0][0].detach().cpu().numpy()
+        recon_target = recs[1][0].detach().cpu().numpy()
         print('condition size', recon_condition.shape)
         print('target size', recon_target.shape)
-        print('input length', input_length)
-
         sample_list.append(np.concatenate((recon_condition, recon_target), axis=1))
 
     np.save('ts_sample.npy', sample_list)
-    print(list(map(len, sample_list)))
     if args.condition_on_targets:
         np.save('ts_target.npy', target_list)
-        print([np.sum(target_list[i] > 0) for i in range(len(target_list))])
     if args.condition_on_conditions:
         np.save('ts_cond.npy', condition_list)
-        print([np.sum(condition_list[i] != 0) for i in range(len(condition_list))])
+

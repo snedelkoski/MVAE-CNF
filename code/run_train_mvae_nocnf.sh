@@ -8,4 +8,4 @@ conda deactivate
 conda activate mult_diffeq
 
 # python train_ts_mvae.py -e 500 --batch_size 128 --z_size 64 --hidden_size 128 --annealing-epochs 50 -lr 1e-3
-python train_ts_mvae.py -e 500 --batch_size 256 --z_size 64 --hidden_size 128 --annealing-epochs 50 -lr 1e-3
+python train_ts_mvae.py -e 500 --batch_size 128 --z_size 64 --hidden_size 128 --annealing-epochs 50 -lr 1e-3
