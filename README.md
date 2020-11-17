@@ -1,4 +1,4 @@
-# BPFDMVM
+# MVAE-CNF
 
 Code for the paper published at LOD 2020, "Learning more expressive joint distributions in multimodal variational methods"
 
